@@ -133,12 +133,10 @@ def ensure_url_and_limit(text: str, url: str, max_units: int = 280) -> str:
         # 最後に出てくるURLを対象とする
         idx = text.rfind(url)
         prefix = text[:idx]  # URLより前
-        # URL単体の長さ
         url_units = count_units(url)
-        # URLを守った上で使えるプレフィックスの最大長
         allowed_prefix_units = max_units - url_units
         if allowed_prefix_units <= 0:
-            # ありえないが、URLだけで制限を超える場合はURLだけ返す
+            # URLだけで溢れるケース（まず無いはずだが）→URLだけ返す
             return url
 
         truncated_prefix = truncate_to_limit(prefix, max_units=allowed_prefix_units)
@@ -609,6 +607,8 @@ def main():
             snippet = extract_snippet(current_video.description)
             tweet = build_tweet_from_template(selected_template.body, current_video, snippet)
             st.session_state["current_tweet"] = tweet
+            # tweet_text側にも反映（初回のみ上書き）
+            st.session_state["tweet_text"] = tweet
             st.success("ツイート文を自動で作成しました。内容を下で確認・修正できます。")
     with col_btn2:
         if st.button("💾 この動画の下書きをスプレッドシートから読み込み"):
@@ -616,6 +616,7 @@ def main():
                 draft = load_tweet_draft_from_sheets(creds, current_video.video_id)
                 if draft:
                     st.session_state["current_tweet"] = draft.tweet_text
+                    st.session_state["tweet_text"] = draft.tweet_text
                     st.success("保存済みの下書きを読み込みました。")
                 else:
                     st.info("この動画の保存済み下書きはありません。")
@@ -668,11 +669,14 @@ def main():
                 st.error(f"テンプレートの保存に失敗しました：{e}")
 
     # ----------------------
-    # ツイート本文編集
+    # ツイート本文編集（リアルタイム文字数カウント）
     # ----------------------
+    if "tweet_text" not in st.session_state:
+        st.session_state["tweet_text"] = st.session_state["current_tweet"]
+
     tweet_text = st.text_area(
         "✏️ ツイート本文（ここで自由に編集できます。改行もそのまま反映されます）",
-        value=st.session_state["current_tweet"],
+        key="tweet_text",
         height=200,
     )
     st.session_state["current_tweet"] = tweet_text
@@ -699,8 +703,9 @@ def main():
     # ----------------------
     # コピー用プレビュー（公開日時を近くに表示）
     # ----------------------
-    st.markdown("#### 📋 ツイート最終確認＆コピー")
-    st.write(f"**この動画の公開予定日時：** {format_publish_at(current_video.publish_at_utc)}")
+    st.markdown("### 📋 ツイート最終確認＆コピー")
+
+    st.info(f"⏰ **この動画の公開予定日時： {format_publish_at(current_video.publish_at_utc)}**")
     st.caption("※下の枠の右上にあるコピーアイコンを押すと、ツイート文をクリップボードにコピーできます。")
 
     if tweet_text:
