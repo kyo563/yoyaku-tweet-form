@@ -1,4 +1,3 @@
-import os
 import re
 import unicodedata
 from dataclasses import dataclass
@@ -21,6 +20,7 @@ SCOPES = [
 ]
 
 # テンプレ・下書き保管用スプレッドシートID（共用）
+# https://docs.google.com/spreadsheets/d/1t34GoYFFHJdCsIjvbSGLEfD7W-cfeDgyAQoh9_u-oUU/edit
 SPREADSHEET_ID = "1t34GoYFFHJdCsIjvbSGLEfD7W-cfeDgyAQoh9_u-oUU"
 
 
@@ -61,7 +61,7 @@ class TweetDraft:
 # ==============================
 
 def count_units(text: str) -> int:
-    """全角=2, 半角=1 で文字数をカウント"""
+    """全角=2, 半角=1 で文字数をカウントします。"""
     total = 0
     for ch in text:
         w = unicodedata.east_asian_width(ch)
@@ -70,7 +70,7 @@ def count_units(text: str) -> int:
 
 
 def truncate_to_limit(text: str, max_units: int = 280) -> str:
-    """max_units を超えないよう末尾をカットし、超えた場合は…を付ける"""
+    """max_units を超えないよう末尾をカットし、超えた場合は…を付けます。"""
     result_chars = []
     length = 0
     for ch in text:
@@ -87,7 +87,7 @@ def truncate_to_limit(text: str, max_units: int = 280) -> str:
 
 
 def extract_snippet(description: str, max_units: int = 200) -> str:
-    """概要欄からツイート用の抜粋を生成"""
+    """概要欄からツイート用の抜粋を生成します。"""
     lines = description.splitlines()
     cleaned = []
     for line in lines:
@@ -104,7 +104,7 @@ def extract_snippet(description: str, max_units: int = 200) -> str:
 
 
 def format_publish_at(dt: datetime, tz_name: str = "Asia/Tokyo") -> str:
-    """表示用の日時文字列に変換"""
+    """表示用の日時文字列に変換します。"""
     try:
         from zoneinfo import ZoneInfo
         tz = ZoneInfo(tz_name)
@@ -115,6 +115,7 @@ def format_publish_at(dt: datetime, tz_name: str = "Asia/Tokyo") -> str:
 
 
 def build_tweet_from_template(template_body: str, video: Video, snippet: str, max_units: int = 280) -> str:
+    """テンプレートに各種情報を埋め込み、文字数制限内で整えます。"""
     publish_at_str = format_publish_at(video.publish_at_utc)
     raw = template_body.format(
         title=video.title,
@@ -133,13 +134,14 @@ def get_client_config() -> dict:
     """
     Streamlit Secrets から Webアプリ用OAuthクライアント設定を取得します。
 
-    secrets.toml 例:
+    Streamlit Cloud の Secrets には、次のような形で設定しておきます:
+
     [google_oauth]
     client_id = "xxxxxxxxxxxxxxxx.apps.googleusercontent.com"
-    client_secret = "xxxxxxxxxxxxxx"
+    client_secret = "xxxxxxxxxxxxxxx"
     auth_uri = "https://accounts.google.com/o/oauth2/auth"
     token_uri = "https://oauth2.googleapis.com/token"
-    redirect_uri = "https://<あなたの-app名>.streamlit.app/"
+    redirect_uri = "https://yoyaku-tweet-form-xxxxx.streamlit.app/"
     """
     info = st.secrets["google_oauth"]
     client_config = {
@@ -153,6 +155,20 @@ def get_client_config() -> dict:
     }
     return client_config
 
+
+def create_flow() -> Flow:
+    """
+    Google OAuth 用の Flow オブジェクトを作成します。
+    state は使わず、redirect_uri だけ指定するシンプル版です。
+    """
+    client_config = get_client_config()
+    redirect_uri = st.secrets["google_oauth"]["redirect_uri"]
+    flow = Flow.from_client_config(
+        client_config=client_config,
+        scopes=SCOPES,
+        redirect_uri=redirect_uri,
+    )
+    return flow
 
 
 def handle_oauth_callback():
@@ -168,7 +184,6 @@ def handle_oauth_callback():
     if code is None:
         return
 
-    # state は使わず、シンプルにトークンを取得する
     flow = create_flow()
     flow.fetch_token(code=code)
     creds = flow.credentials
@@ -177,18 +192,6 @@ def handle_oauth_callback():
     # URLのクエリパラメータをクリアしてリロード
     st.experimental_set_query_params()
     st.experimental_rerun()
-
-
-    # 正常ケース：トークン取得
-    flow = create_flow(state=state)
-    flow.fetch_token(code=code)
-    creds = flow.credentials
-    st.session_state["google_creds"] = creds
-
-    # URLのクエリパラメータをクリアしてリロード
-    st.experimental_set_query_params()
-    st.experimental_rerun()
-
 
 
 def start_google_oauth():
@@ -204,7 +207,6 @@ def start_google_oauth():
     st.markdown(f"[Googleアカウントで連携する]({auth_url})")
 
 
-
 # ==============================
 # YouTube API 呼び出し
 # ==============================
@@ -217,6 +219,7 @@ def fetch_scheduled_videos(creds: Credentials) -> List[Video]:
     youtube = build("youtube", "v3", credentials=creds)
     now = datetime.now(timezone.utc)
 
+    # 自分のチャンネルの uploads プレイリストIDを取得
     channels_resp = youtube.channels().list(part="contentDetails", mine=True).execute()
     items = channels_resp.get("items", [])
     if not items:
@@ -224,6 +227,7 @@ def fetch_scheduled_videos(creds: Credentials) -> List[Video]:
 
     uploads_playlist_id = items[0]["contentDetails"]["relatedPlaylists"]["uploads"]
 
+    # uploads プレイリスト内の動画IDを取得
     playlist_items_resp = youtube.playlistItems().list(
         part="contentDetails", playlistId=uploads_playlist_id, maxResults=50
     ).execute()
@@ -231,9 +235,10 @@ def fetch_scheduled_videos(creds: Credentials) -> List[Video]:
     if not video_ids:
         return []
 
+    # videos.list で詳細情報取得
     videos: List[Video] = []
     for i in range(0, len(video_ids), 50):
-        batch_ids = video_ids[i : i + 50]
+        batch_ids = video_ids[i: i + 50]
         resp = youtube.videos().list(part="snippet,status", id=",".join(batch_ids)).execute()
         for item in resp.get("items", []):
             status = item.get("status", {})
@@ -266,7 +271,7 @@ def fetch_scheduled_videos(creds: Credentials) -> List[Video]:
 # ==============================
 
 def default_templates() -> List[Template]:
-    """スプレッドシートが空のときに使うアプリ内デフォルトテンプレ"""
+    """スプレッドシートが空のときに使うアプリ内デフォルトテンプレです。"""
     return [
         Template(
             id="1",
@@ -447,7 +452,7 @@ def save_tweet_draft_to_sheets(creds: Credentials, draft: TweetDraft) -> None:
 
 
 # ==============================
-# Streamlit アプリ
+# Streamlit アプリ本体
 # ==============================
 
 def main():
@@ -478,9 +483,6 @@ def main():
     creds: Optional[Credentials] = st.session_state["google_creds"]
     templates: List[Template] = st.session_state["templates"]
 
-    # 認証前はテンプレ関連を無効化
-    templates_disabled = creds is None
-
     # ----------------------
     # サイドバー：認証
     # ----------------------
@@ -491,10 +493,9 @@ def main():
         st.sidebar.caption("※Google公式の安全な認証画面が別タブで開きます。")
         if st.sidebar.button("Google連携を開始する"):
             start_google_oauth()
-            st.stop()  # ここで一旦止めて、リンククリックを待つ
+            st.stop()
     else:
         st.sidebar.success("✅ Google認証済み")
-
         if st.sidebar.button("認証をリセットする（このブラウザだけ）"):
             st.session_state["google_creds"] = None
             st.session_state["videos"] = []
@@ -628,7 +629,7 @@ def main():
                 save_templates_to_sheets(creds, templates)
                 st.success("テンプレートをスプレッドシートに保存しました。")
             except Exception as e:
-                st.error(f"テンプレートの保存に失敗しました：{e}")
+                st.error(f("テンプレートの保存に失敗しました：{e}"))
 
     # ----------------------
     # ツイート本文編集
