@@ -172,23 +172,35 @@ def handle_oauth_callback():
     st.session_state["google_creds"] に保存します。
     """
     params = st.experimental_get_query_params()
-    if "code" in params and "state" in params and "google_creds" not in st.session_state:
-        code = params["code"][0]
-        state = params["state"][0]
-        stored_state = st.session_state.get("oauth_state")
+    if "code" not in params:
+        return
 
-        if stored_state is None or stored_state != state:
-            st.error("Google認証の state が一致しませんでした。もう一度やり直してください。")
-            return
+    code = params.get("code", [None])[0]
+    state = params.get("state", [None])[0]
+    stored_state = st.session_state.get("oauth_state")
 
-        flow = create_flow(state=state)
-        flow.fetch_token(code=code)
-        creds = flow.credentials
-        st.session_state["google_creds"] = creds
-
-        # URLのクエリパラメータをクリアしてリロード
+    # state が合わない場合は、セッションをリセットしてやり直してもらう
+    if code is None or state is None or stored_state is None or stored_state != state:
+        # 余計なクエリパラメータを消す
         st.experimental_set_query_params()
-        st.experimental_rerun()
+        # 古い state 情報を捨てる
+        st.session_state.pop("oauth_state", None)
+        st.warning(
+            "Google認証の情報が古くなっていたため、認証をやり直してください。\n"
+            "左のサイドバーからもう一度「Google連携を開始する」を押してください。"
+        )
+        return
+
+    # 正常ケース：トークン取得
+    flow = create_flow(state=state)
+    flow.fetch_token(code=code)
+    creds = flow.credentials
+    st.session_state["google_creds"] = creds
+
+    # URLのクエリパラメータをクリアしてリロード
+    st.experimental_set_query_params()
+    st.experimental_rerun()
+
 
 
 def start_google_oauth():
