@@ -191,7 +191,8 @@ def handle_oauth_callback():
 
     # URLのクエリパラメータをクリアしてリロード
     st.experimental_set_query_params()
-    st.experimental_rerun()
+    st.rerun()
+
 
 
 def start_google_oauth():
