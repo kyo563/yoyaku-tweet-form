@@ -154,21 +154,10 @@ def get_client_config() -> dict:
     return client_config
 
 
-def create_flow(state: Optional[str] = None) -> Flow:
-    client_config = get_client_config()
-    redirect_uri = st.secrets["google_oauth"]["redirect_uri"]
-    flow = Flow.from_client_config(
-        client_config=client_config,
-        scopes=SCOPES,
-        state=state,
-        redirect_uri=redirect_uri,
-    )
-    return flow
-
 
 def handle_oauth_callback():
     """
-    Google からのリダイレクト（?code=...&state=...）が来たときにトークンを取得し、
+    Google からのリダイレクト（?code=...）が来たときにトークンを取得し、
     st.session_state["google_creds"] に保存します。
     """
     params = st.experimental_get_query_params()
@@ -176,20 +165,19 @@ def handle_oauth_callback():
         return
 
     code = params.get("code", [None])[0]
-    state = params.get("state", [None])[0]
-    stored_state = st.session_state.get("oauth_state")
-
-    # state が合わない場合は、セッションをリセットしてやり直してもらう
-    if code is None or state is None or stored_state is None or stored_state != state:
-        # 余計なクエリパラメータを消す
-        st.experimental_set_query_params()
-        # 古い state 情報を捨てる
-        st.session_state.pop("oauth_state", None)
-        st.warning(
-            "Google認証の情報が古くなっていたため、認証をやり直してください。\n"
-            "左のサイドバーからもう一度「Google連携を開始する」を押してください。"
-        )
+    if code is None:
         return
+
+    # state は使わず、シンプルにトークンを取得する
+    flow = create_flow()
+    flow.fetch_token(code=code)
+    creds = flow.credentials
+    st.session_state["google_creds"] = creds
+
+    # URLのクエリパラメータをクリアしてリロード
+    st.experimental_set_query_params()
+    st.experimental_rerun()
+
 
     # 正常ケース：トークン取得
     flow = create_flow(state=state)
@@ -208,13 +196,13 @@ def start_google_oauth():
     Google 認証を開始し、認証URLへのリンクを表示します。
     """
     flow = create_flow()
-    auth_url, state = flow.authorization_url(
+    auth_url, _ = flow.authorization_url(
         access_type="offline",
         include_granted_scopes="true",
         prompt="consent",
     )
-    st.session_state["oauth_state"] = state
     st.markdown(f"[Googleアカウントで連携する]({auth_url})")
+
 
 
 # ==============================
