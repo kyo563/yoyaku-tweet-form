@@ -114,16 +114,52 @@ def format_publish_at(dt: datetime, tz_name: str = "Asia/Tokyo") -> str:
     return local.strftime("%Y/%m/%d %H:%M")
 
 
+def ensure_url_and_limit(text: str, url: str, max_units: int = 280) -> str:
+    """
+    URLは絶対に切らないようにしつつ、全体をmax_units以内に収めます。
+    仕様：
+      - すでに制限以内ならそのまま返す
+      - 超えている場合：
+          * ツイート中のURL以降の文字は捨てる
+          * URLより前の部分だけを max_units - URL長 の範囲でトリミング
+          * 最後にURLをそのまま連結
+      - ツイート内にURLが見つからない場合は、従来通り末尾カット
+    """
+    total_units = count_units(text)
+    if total_units <= max_units:
+        return text
+
+    if url and url in text:
+        # 最後に出てくるURLを対象とする
+        idx = text.rfind(url)
+        prefix = text[:idx]  # URLより前
+        # URL単体の長さ
+        url_units = count_units(url)
+        # URLを守った上で使えるプレフィックスの最大長
+        allowed_prefix_units = max_units - url_units
+        if allowed_prefix_units <= 0:
+            # ありえないが、URLだけで制限を超える場合はURLだけ返す
+            return url
+
+        truncated_prefix = truncate_to_limit(prefix, max_units=allowed_prefix_units)
+        return truncated_prefix + url
+    else:
+        # URLが含まれていないテンプレの場合は普通に末尾カット
+        return truncate_to_limit(text, max_units=max_units)
+
+
 def build_tweet_from_template(template_body: str, video: Video, snippet: str, max_units: int = 280) -> str:
-    """テンプレートに各種情報を埋め込み、文字数制限内で整えます。"""
+    """テンプレートに各種情報を埋め込み、文字数制限内で整えます。URLは切らない。"""
     publish_at_str = format_publish_at(video.publish_at_utc)
+    url = video.url
+
     raw = template_body.format(
         title=video.title,
-        url=video.url,
+        url=url,
         snippet=snippet,
         publish_at=publish_at_str,
     )
-    return truncate_to_limit(raw, max_units=max_units)
+    return ensure_url_and_limit(raw, url, max_units=max_units)
 
 
 # ==============================
@@ -192,7 +228,6 @@ def handle_oauth_callback():
     # URLのクエリパラメータをクリアしてリロード
     st.experimental_set_query_params()
     st.rerun()
-
 
 
 def start_google_oauth():
@@ -501,7 +536,7 @@ def main():
             st.session_state["google_creds"] = None
             st.session_state["videos"] = []
             st.session_state["current_tweet"] = ""
-            st.experimental_rerun()
+            st.rerun()
 
     # 認証前ならここで終了
     if creds is None:
@@ -630,7 +665,7 @@ def main():
                 save_templates_to_sheets(creds, templates)
                 st.success("テンプレートをスプレッドシートに保存しました。")
             except Exception as e:
-                st.error(f("テンプレートの保存に失敗しました：{e}"))
+                st.error(f"テンプレートの保存に失敗しました：{e}")
 
     # ----------------------
     # ツイート本文編集
@@ -661,7 +696,13 @@ def main():
         except Exception as e:
             st.error(f"下書きの保存に失敗しました：{e}")
 
-    st.markdown("#### 📋 コピー用プレビュー（右上のアイコンからコピーできます）")
+    # ----------------------
+    # コピー用プレビュー（公開日時を近くに表示）
+    # ----------------------
+    st.markdown("#### 📋 ツイート最終確認＆コピー")
+    st.write(f"**この動画の公開予定日時：** {format_publish_at(current_video.publish_at_utc)}")
+    st.caption("※下の枠の右上にあるコピーアイコンを押すと、ツイート文をクリップボードにコピーできます。")
+
     if tweet_text:
         st.code(tweet_text, language=None)
     else:
