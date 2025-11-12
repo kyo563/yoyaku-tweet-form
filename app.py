@@ -23,6 +23,9 @@ SCOPES = [
 # https://docs.google.com/spreadsheets/d/1t34GoYFFHJdCsIjvbSGLEfD7W-cfeDgyAQoh9_u-oUU/edit
 SPREADSHEET_ID = "1t34GoYFFHJdCsIjvbSGLEfD7W-cfeDgyAQoh9_u-oUU"
 
+# Twitter上でのURLカウント（安全側に24文字として扱う）
+URL_UNITS = 24
+
 
 # ==============================
 # データ構造
@@ -86,8 +89,27 @@ def truncate_to_limit(text: str, max_units: int = 280) -> str:
     return truncated
 
 
+def count_tweet_units_with_urls(text: str) -> int:
+    """
+    ツイート長を計算します。
+    - 通常文字：全角=2, 半角=1
+    - URL: 1本あたり固定で URL_UNITS 文字としてカウント
+    """
+    url_pattern = re.compile(r"https?://\S+")
+    total = 0
+    pos = 0
+    for m in url_pattern.finditer(text):
+        before = text[pos:m.start()]
+        total += count_units(before)
+        total += URL_UNITS
+        pos = m.end()
+    # 残り
+    total += count_units(text[pos:])
+    return total
+
+
 def extract_snippet(description: str, max_units: int = 200) -> str:
-    """概要欄からツイート用の抜粋を生成します。"""
+    """概要欄からツイート用の抜粋を生成します（URLは除外）。"""
     lines = description.splitlines()
     cleaned = []
     for line in lines:
@@ -117,33 +139,35 @@ def format_publish_at(dt: datetime, tz_name: str = "Asia/Tokyo") -> str:
 def ensure_url_and_limit(text: str, url: str, max_units: int = 280) -> str:
     """
     URLは絶対に切らないようにしつつ、全体をmax_units以内に収めます。
-    仕様：
-      - すでに制限以内ならそのまま返す
-      - 超えている場合：
-          * ツイート中のURL以降の文字は捨てる
-          * URLより前の部分だけを max_units - URL長 の範囲でトリミング
-          * 最後にURLをそのまま連結
-      - ツイート内にURLが見つからない場合は、従来通り末尾カット
+    ・URL自体は URL_UNITS 文字としてカウント
+    ・URLより後ろの余分な文字は切り捨て
+    ・URLより前の部分は、(max_units - URL_UNITS) の範囲でトリミング
     """
-    total_units = count_units(text)
-    if total_units <= max_units:
-        return text
-
-    if url and url in text:
-        # 最後に出てくるURLを対象とする
-        idx = text.rfind(url)
-        prefix = text[:idx]  # URLより前
-        url_units = count_units(url)
-        allowed_prefix_units = max_units - url_units
-        if allowed_prefix_units <= 0:
-            # URLだけで溢れるケース（まず無いはずだが）→URLだけ返す
-            return url
-
-        truncated_prefix = truncate_to_limit(prefix, max_units=allowed_prefix_units)
-        return truncated_prefix + url
-    else:
-        # URLが含まれていないテンプレの場合は普通に末尾カット
+    if not url or url not in text:
+        # URLが含まれていない場合は単純カット
+        if count_units(text) <= max_units:
+            return text
         return truncate_to_limit(text, max_units=max_units)
+
+    # 最後に出てくるURLを対象にする
+    idx = text.rfind(url)
+    prefix = text[:idx]
+
+    prefix_units = count_units(prefix)
+    total_units = prefix_units + URL_UNITS
+
+    if total_units <= max_units:
+        # URLより前はそのまま、URLもそのまま
+        return prefix + url
+
+    # URLを守った上で、前半だけ削る
+    allowed_prefix_units = max_units - URL_UNITS
+    if allowed_prefix_units <= 0:
+        # 理論上ほぼ起こらないが、安全のため
+        return url
+
+    truncated_prefix = truncate_to_limit(prefix, max_units=allowed_prefix_units)
+    return truncated_prefix + url
 
 
 def build_tweet_from_template(template_body: str, video: Video, snippet: str, max_units: int = 280) -> str:
@@ -157,7 +181,8 @@ def build_tweet_from_template(template_body: str, video: Video, snippet: str, ma
         snippet=snippet,
         publish_at=publish_at_str,
     )
-    return ensure_url_and_limit(raw, url, max_units=max_units)
+    tweet = ensure_url_and_limit(raw, url, max_units=max_units)
+    return tweet
 
 
 # ==============================
@@ -607,7 +632,6 @@ def main():
             snippet = extract_snippet(current_video.description)
             tweet = build_tweet_from_template(selected_template.body, current_video, snippet)
             st.session_state["current_tweet"] = tweet
-            # tweet_text側にも反映（初回のみ上書き）
             st.session_state["tweet_text"] = tweet
             st.success("ツイート文を自動で作成しました。内容を下で確認・修正できます。")
     with col_btn2:
@@ -626,7 +650,7 @@ def main():
         pass
 
     # ----------------------
-    # テンプレート編集
+    # テンプレート編集（削除機能＋プレースホルダ説明＋挿入ボタン付き）
     # ----------------------
     with st.expander("🔧 テンプレート編集（今選んでいるテンプレを直接編集できます）"):
         tmpl_name = st.text_input(
@@ -635,12 +659,13 @@ def main():
             key=f"tmpl_name_{selected_template.id}",
             help="テンプレ一覧で表示される名前です。",
         )
+        tmpl_body_key = f"tmpl_body_{selected_template.id}"
         tmpl_body = st.text_area(
             "テンプレート本文",
             value=selected_template.body,
-            key=f"tmpl_body_{selected_template.id}",
+            key=tmpl_body_key,
             height=150,
-            help="{title} / {snippet} / {url} / {publish_at} が使えます。",
+            help="下の「差し込みキーワード」を使うと、タイトルやURLなどを自動で入れられます。",
         )
         tmpl_default = st.checkbox(
             "このテンプレートをデフォルトにする",
@@ -648,25 +673,81 @@ def main():
             key=f"tmpl_default_{selected_template.id}",
         )
 
-        if st.button("このテンプレートを保存する（スプレッドシート更新）"):
-            for t in templates:
-                if t.id == selected_template.id:
-                    t.name = tmpl_name
-                    t.body = tmpl_body
-                    t.is_default = tmpl_default
+        # ▼ 差し込みキーワード（プレースホルダ）挿入ボタン
+        st.markdown("##### 差し込みキーワードを挿入する")
+        st.caption("ボタンを押すと、テンプレート本文の末尾にキーワードが追加されます。")
 
-            if tmpl_default:
+        def append_placeholder(ph: str):
+            current = st.session_state.get(tmpl_body_key, "")
+            st.session_state[tmpl_body_key] = current + ph
+
+        col_ins1, col_ins2, col_ins3, col_ins4 = st.columns(4)
+        with col_ins1:
+            if st.button("タイトルを差し込む", key=f"ins_title_{selected_template.id}"):
+                append_placeholder("{title}")
+        with col_ins2:
+            if st.button("概要（自動要約）を差し込む", key=f"ins_snippet_{selected_template.id}"):
+                append_placeholder("{snippet}")
+        with col_ins3:
+            if st.button("動画URLを差し込む", key=f"ins_url_{selected_template.id}"):
+                append_placeholder("{url}")
+        with col_ins4:
+            if st.button("公開日時を差し込む", key=f"ins_publish_{selected_template.id}"):
+                append_placeholder("{publish_at}")
+
+        # ▼ 差し込みキーワードの意味と「テンプレ内での書き方」
+        st.markdown("###### 差し込みキーワードの一覧")
+
+        st.markdown("**タイトル**（動画タイトルがそのまま入ります）")
+        st.code("{title}", language=None)
+
+        st.markdown("**概要（自動要約）**（概要欄から自動で抜き出した短い説明文が入ります）")
+        st.code("{snippet}", language=None)
+
+        st.markdown("**動画URL**（YouTubeの動画URLが入ります）")
+        st.code("{url}", language=None)
+
+        st.markdown("**公開日時**（動画の公開予定日時が入ります。例：2025/01/23 20:00）")
+        st.code("{publish_at}", language=None)
+
+        col_tmpl_btn1, col_tmpl_btn2 = st.columns(2)
+        with col_tmpl_btn1:
+            if st.button("このテンプレートを保存する（スプレッドシート更新）"):
+                # 最新の本文を session_state から取得
+                tmpl_body = st.session_state.get(tmpl_body_key, selected_template.body)
+
                 for t in templates:
-                    if t.id != selected_template.id:
-                        t.is_default = False
+                    if t.id == selected_template.id:
+                        t.name = tmpl_name
+                        t.body = tmpl_body
+                        t.is_default = tmpl_default
 
-            st.session_state["templates"] = templates
+                if tmpl_default:
+                    for t in templates:
+                        if t.id != selected_template.id:
+                            t.is_default = False
 
-            try:
-                save_templates_to_sheets(creds, templates)
-                st.success("テンプレートをスプレッドシートに保存しました。")
-            except Exception as e:
-                st.error(f"テンプレートの保存に失敗しました：{e}")
+                st.session_state["templates"] = templates
+
+                try:
+                    save_templates_to_sheets(creds, templates)
+                    st.success("テンプレートをスプレッドシートに保存しました。")
+                except Exception as e:
+                    st.error(f"テンプレートの保存に失敗しました：{e}")
+
+        with col_tmpl_btn2:
+            if st.button("🗑 このテンプレートを削除する"):
+                if len(templates) <= 1:
+                    st.warning("テンプレートは最低1件必要なため、削除できません。")
+                else:
+                    new_templates = [t for t in templates if t.id != selected_template.id]
+                    st.session_state["templates"] = new_templates
+                    try:
+                        save_templates_to_sheets(creds, new_templates)
+                        st.success("テンプレートを削除しました。")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"テンプレートの削除に失敗しました：{e}")
 
     # ----------------------
     # ツイート本文編集（リアルタイム文字数カウント）
@@ -681,7 +762,7 @@ def main():
     )
     st.session_state["current_tweet"] = tweet_text
 
-    units = count_units(tweet_text)
+    units = count_tweet_units_with_urls(tweet_text)
     if units > 280:
         st.error(f"現在 {units} / 280 文字相当です。（少し削ってください）")
     else:
