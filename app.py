@@ -22,12 +22,8 @@ SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
 ]
 
-# 共有スプレッドシートID
-SPREADSHEET_ID = "1t34GoYFFHJdCsIjvbSGLEfD7W-cfeDgyAQoh9_u-oUU"
-
-# X(Twitter)上のURL固定長（安全側24）
-URL_UNITS = 24
-
+SPREADSHEET_ID = "1t34GoYFFHJdCsIjvbSGLEfD7W-cfeDgyAQoh9_u-oUU"  # 共有シートID
+URL_UNITS = 24  # X(Twitter) URL固定長（安全側24）
 
 # ==============================
 # データ構造
@@ -40,26 +36,15 @@ class Template:
     body: str
     is_default: bool = False
 
-
 @dataclass
 class Video:
     video_id: str
     title: str
     description: str
     publish_at_utc: datetime
-
     @property
     def url(self) -> str:
         return f"https://www.youtube.com/watch?v={self.video_id}"
-
-
-@dataclass
-class TweetDraft:
-    video_id: str
-    tweet_text: str
-    publish_at_utc: datetime
-    title: str
-
 
 # ==============================
 # テキスト処理
@@ -72,13 +57,10 @@ def count_units(text: str) -> int:
         total += 2 if w in ("F", "W", "A") else 1
     return total
 
-
 def truncate_to_limit(text: str, max_units: int = 280) -> str:
-    result_chars = []
-    length = 0
+    result_chars, length = [], 0
     for ch in text:
-        w = unicodedata.east_asian_width(ch)
-        add = 2 if w in ("F", "W", "A") else 1
+        add = 2 if unicodedata.east_asian_width(ch) in ("F", "W", "A") else 1
         if length + add > max_units:
             break
         result_chars.append(ch)
@@ -88,97 +70,59 @@ def truncate_to_limit(text: str, max_units: int = 280) -> str:
         truncated += "…"
     return truncated
 
-
 def count_units_breakdown(text: str) -> tuple[int, int, int]:
-    """
-    本文(非URL)の長さ・URL部の合計長(24×本数)・URL本数 を返す。
-    """
     url_pattern = re.compile(r"https?://\S+")
-    body_units = 0
-    url_count = 0
-    pos = 0
+    body_units, url_count, pos = 0, 0, 0
     for m in url_pattern.finditer(text):
-        before = text[pos:m.start()]
-        body_units += count_units(before)
+        body_units += count_units(text[pos:m.start()])
         url_count += 1
         pos = m.end()
     body_units += count_units(text[pos:])
-    url_units = URL_UNITS * url_count
-    return body_units, url_units, url_count
-
-
-def count_tweet_units_with_urls(text: str) -> int:
-    body_units, url_units, _ = count_units_breakdown(text)
-    return body_units + url_units
-
+    return body_units, URL_UNITS * url_count, url_count
 
 def extract_snippet(description: str, max_units: int = 200) -> str:
     lines = description.splitlines()
     cleaned = []
     for line in lines:
-        line = line.strip()
-        if not line:
+        s = line.strip()
+        if not s or s.startswith("#") or re.search(r"https?://", s):
             continue
-        if line.startswith("#"):
-            continue
-        if re.search(r"https?://", line):
-            continue
-        cleaned.append(line)
-    text = " ".join(cleaned)
-    return truncate_to_limit(text, max_units=max_units)
-
+        cleaned.append(s)
+    return truncate_to_limit(" ".join(cleaned), max_units=max_units)
 
 def format_publish_at(dt: datetime, tz_name: str = "Asia/Tokyo") -> str:
     try:
         from zoneinfo import ZoneInfo
-        tz = ZoneInfo(tz_name)
-        local = dt.astimezone(tz)
+        local = dt.astimezone(ZoneInfo(tz_name))
     except Exception:
         local = dt
     return local.strftime("%Y/%m/%d %H:%M")
 
-
 def ensure_url_and_limit(text: str, url: str, max_units: int = 280) -> str:
     if not url or url not in text:
         return text if count_units(text) <= max_units else truncate_to_limit(text, max_units=max_units)
-
     idx = text.rfind(url)
     prefix = text[:idx]
-
-    prefix_units = count_units(prefix)
-    total_units = prefix_units + URL_UNITS
-
-    if total_units <= max_units:
+    if count_units(prefix) + URL_UNITS <= max_units:
         return prefix + url
-
-    allowed_prefix_units = max_units - URL_UNITS
-    if allowed_prefix_units <= 0:
+    allowed = max_units - URL_UNITS
+    if allowed <= 0:
         return url
-
-    truncated_prefix = truncate_to_limit(prefix, max_units=allowed_prefix_units)
-    return truncated_prefix + url
-
+    return truncate_to_limit(prefix, max_units=allowed) + url
 
 def build_tweet_from_template(template_body: str, video: Video, snippet: str, max_units: int = 280) -> str:
     publish_at_str = format_publish_at(video.publish_at_utc)
     url = video.url
-    raw = template_body.format(
-        title=video.title,
-        url=url,
-        snippet=snippet,
-        publish_at=publish_at_str,
-    )
-    tweet = ensure_url_and_limit(raw, url, max_units=max_units)
-    return tweet
-
+    raw = template_body.format(title=video.title, url=url, snippet=snippet, publish_at=publish_at_str)
+    return ensure_url_and_limit(raw, url, max_units=max_units)
 
 # ==============================
-# Google OAuth（Webアプリ用）
+# Google OAuth
 # ==============================
 
 def get_client_config() -> dict:
     info = st.secrets["google_oauth"]
-    client_config = {
+    return {
         "web": {
             "client_id": info["client_id"],
             "client_secret": info["client_secret"],
@@ -187,44 +131,32 @@ def get_client_config() -> dict:
             "redirect_uris": [info["redirect_uri"]],
         }
     }
-    return client_config
-
 
 def create_flow() -> Flow:
-    client_config = get_client_config()
-    redirect_uri = st.secrets["google_oauth"]["redirect_uri"]
     flow = Flow.from_client_config(
-        client_config=client_config,
+        client_config=get_client_config(),
         scopes=SCOPES,
-        redirect_uri=redirect_uri,
+        redirect_uri=st.secrets["google_oauth"]["redirect_uri"],
     )
     return flow
-
 
 def handle_oauth_callback():
     params = st.experimental_get_query_params()
     if "code" not in params:
         return
     code = params.get("code", [None])[0]
-    if code is None:
+    if not code:
         return
     flow = create_flow()
     flow.fetch_token(code=code)
-    creds = flow.credentials
-    st.session_state["google_creds"] = creds
+    st.session_state["google_creds"] = flow.credentials
     st.experimental_set_query_params()
     st.rerun()
 
-
 def start_google_oauth():
     flow = create_flow()
-    auth_url, _ = flow.authorization_url(
-        access_type="offline",
-        include_granted_scopes="true",
-        prompt="consent",
-    )
+    auth_url, _ = flow.authorization_url(access_type="offline", include_granted_scopes="true", prompt="consent")
     st.markdown(f"[Googleアカウントで連携する]({auth_url})")
-
 
 def ensure_valid_creds(creds: Optional[Credentials]) -> Optional[Credentials]:
     if creds and creds.expired and creds.refresh_token:
@@ -234,7 +166,6 @@ def ensure_valid_creds(creds: Optional[Credentials]) -> Optional[Credentials]:
         except Exception:
             pass
     return creds
-
 
 # ==============================
 # YouTube API
@@ -249,33 +180,29 @@ def fetch_scheduled_videos(creds: Credentials) -> List[Video]:
     items = channels_resp.get("items", [])
     if not items:
         return []
-
     uploads_playlist_id = items[0]["contentDetails"]["relatedPlaylists"]["uploads"]
 
     video_ids: List[str] = []
     page_token = None
     while True:
-        playlist_items_resp = youtube.playlistItems().list(
+        pl = youtube.playlistItems().list(
             part="contentDetails",
             playlistId=uploads_playlist_id,
             maxResults=50,
             pageToken=page_token,
         ).execute()
-        video_ids += [it["contentDetails"]["videoId"] for it in playlist_items_resp.get("items", [])]
-        page_token = playlist_items_resp.get("nextPageToken")
+        video_ids += [it["contentDetails"]["videoId"] for it in pl.get("items", [])]
+        page_token = pl.get("nextPageToken")
         if not page_token:
             break
-
     if not video_ids:
         return []
 
     videos: List[Video] = []
     for i in range(0, len(video_ids), 50):
-        batch_ids = video_ids[i: i + 50]
-        resp = youtube.videos().list(part="snippet,status", id=",".join(batch_ids)).execute()
+        resp = youtube.videos().list(part="snippet,status", id=",".join(video_ids[i:i+50])).execute()
         for item in resp.get("items", []):
-            status = item.get("status", {})
-            snippet = item.get("snippet", {})
+            status, snip = item.get("status", {}), item.get("snippet", {})
             publish_at_str = status.get("publishAt")
             if not publish_at_str:
                 continue
@@ -287,17 +214,14 @@ def fetch_scheduled_videos(creds: Credentials) -> List[Video]:
                 continue
             if publish_dt <= now:
                 continue
-            videos.append(
-                Video(
-                    video_id=item["id"],
-                    title=snippet.get("title", ""),
-                    description=snippet.get("description", ""),
-                    publish_at_utc=publish_dt,
-                )
-            )
+            videos.append(Video(
+                video_id=item["id"],
+                title=snip.get("title", ""),
+                description=snip.get("description", ""),
+                publish_at_utc=publish_dt,
+            ))
     videos.sort(key=lambda v: v.publish_at_utc)
     return videos
-
 
 # ==============================
 # Google Sheets（テンプレ）
@@ -305,84 +229,61 @@ def fetch_scheduled_videos(creds: Credentials) -> List[Video]:
 
 def default_templates() -> List[Template]:
     return [
-        Template(
-            id="1",
-            name="シンプルなお知らせ",
-            body="【新着】{title}\n\n{snippet}\n\n▼動画はこちら\n{url}",
-            is_default=True,
-        ),
-        Template(
-            id="2",
-            name="丁寧めなお知らせ",
-            body="本日 {publish_at} に動画を公開予定です。\n\n{snippet}\n\n{url}",
-            is_default=False,
-        ),
+        Template(id="1", name="シンプルなお知らせ", body="【新着】{title}\n\n{snippet}\n\n▼動画はこちら\n{url}", is_default=True),
+        Template(id="2", name="丁寧めなお知らせ", body="本日 {publish_at} に動画を公開予定です。\n\n{snippet}\n\n{url}", is_default=False),
     ]
-
 
 def load_templates_from_sheets(creds: Credentials) -> List[Template]:
     if not SPREADSHEET_ID:
         return default_templates()
     creds = ensure_valid_creds(creds)
     service = build("sheets", "v4", credentials=creds)
-    sheet = service.spreadsheets()
-    result = sheet.values().get(
+    result = service.spreadsheets().values().get(
         spreadsheetId=SPREADSHEET_ID,
         range="Templates!A2:D",
     ).execute()
     values = result.get("values", [])
     if not values:
         return default_templates()
-
-    templates: List[Template] = []
+    out: List[Template] = []
     for row in values:
         t_id = row[0] if len(row) > 0 else ""
         name = row[1] if len(row) > 1 else ""
         body = row[2] if len(row) > 2 else ""
-        is_default_str = row[3] if len(row) > 3 else "FALSE"
-        is_default = str(is_default_str).upper() == "TRUE"
-        if not t_id or not name or not body:
-            continue
-        templates.append(Template(id=t_id, name=name, body=body, is_default=is_default))
-    return templates or default_templates()
-
+        is_default = (str(row[3]).upper() == "TRUE") if len(row) > 3 else False
+        if t_id and name and body:
+            out.append(Template(id=t_id, name=name, body=body, is_default=is_default))
+    return out or default_templates()
 
 def save_templates_to_sheets(creds: Credentials, templates: List[Template]) -> None:
     if not SPREADSHEET_ID:
         return
     creds = ensure_valid_creds(creds)
     service = build("sheets", "v4", credentials=creds)
-    sheet = service.spreadsheets()
     values = [[t.id, t.name, t.body, "TRUE" if t.is_default else "FALSE"] for t in templates]
-    sheet.values().clear(
-        spreadsheetId=SPREADSHEET_ID,
-        range="Templates!A2:D",
+    service.spreadsheets().values().clear(
+        spreadsheetId=SPREADSHEET_ID, range="Templates!A2:D"
     ).execute()
-    if not values:
-        return
-    sheet.values().update(
-        spreadsheetId=SPREADSHEET_ID,
-        range="Templates!A2:D",
-        valueInputOption="RAW",
-        body={"values": values},
-    ).execute()
-
+    if values:
+        service.spreadsheets().values().update(
+            spreadsheetId=SPREADSHEET_ID,
+            range="Templates!A2:D",
+            valueInputOption="RAW",
+            body={"values": values},
+        ).execute()
 
 def append_template_to_sheets(creds: Credentials, template: Template) -> None:
     if not SPREADSHEET_ID:
         return
     creds = ensure_valid_creds(creds)
     service = build("sheets", "v4", credentials=creds)
-    sheet = service.spreadsheets()
-    values = [[template.id, template.name, template.body, "TRUE" if template.is_default else "FALSE"]]
-    sheet.values().append(
+    service.spreadsheets().values().append(
         spreadsheetId=SPREADSHEET_ID,
         range="Templates!A:D",
         valueInputOption="RAW",
         insertDataOption="INSERT_ROWS",
-        body={"values": values},
+        body={"values": [[template.id, template.name, template.body, "TRUE" if template.is_default else "FALSE"]]},
     ).execute()
-
 
 def next_template_id(existing: List[Template]) -> str:
     nums = []
@@ -391,81 +292,51 @@ def next_template_id(existing: List[Template]) -> str:
             nums.append(int(t.id))
         except Exception:
             pass
-    if nums:
-        return str(max(nums) + 1)
-    return uuid.uuid4().hex[:8]
-
+    return str(max(nums) + 1) if nums else uuid.uuid4().hex[:8]
 
 # ==============================
-# Streamlit アプリ本体
+# アプリ本体
 # ==============================
 
 def main():
     st.set_page_config(page_title="予約投稿作成フォーム", layout="wide")
     st.title("📝 予約投稿作成フォーム（YouTube×X）")
 
-    # ===== CSS（ターゲット用マーカー + 個別色）=====
+    # ===== CSS：配色（概要＝灰、テンプレ編集＝緑/青）=====
     st.markdown(
         """
         <style>
-        /* マーカー直後のExpanderを個別配色 */
         .marker-overview + div[data-testid="stExpander"] > details {
-            border: 1px solid #dcdcdc;
-            border-radius: 10px;
-            background: #f5f5f5;            /* 概要欄＝灰色 */
+            border: 1px solid #dcdcdc; border-radius: 10px; background: #f5f5f5;
         }
         .marker-overview + div[data-testid="stExpander"] summary {
-            background: #eeeeee;
-            color: #333333;
-            border-radius: 10px;
+            background: #eeeeee; color: #333; border-radius: 10px;
         }
-
         .marker-template + div[data-testid="stExpander"] > details {
-            border: 1px solid #b7e1c0;
-            border-radius: 10px;
-            background: #e6f4ea;            /* テンプレ編集＝緑系 */
+            border: 1px solid #b7e1c0; border-radius: 10px; background: #e6f4ea;
         }
         .marker-template + div[data-testid="stExpander"] summary {
-            background: #cdefd8;
-            color: #0b57d0;                  /* 文字は青色 */
-            border-radius: 10px;
-            font-weight: 600;
+            background: #cdefd8; color: #0b57d0; border-radius: 10px; font-weight: 600;
         }
-        /* ちょい余白 */
         div[data-testid="stExpander"] { margin-bottom: 0.75rem; }
         </style>
         """,
         unsafe_allow_html=True,
     )
 
-    st.markdown(
-        """
-このフォームでは、**自分のYouTubeチャンネルの予約投稿動画**から  
-「タイトル」「概要欄」「公開予定時間」を読み取り、  
-**X（旧Twitter）の予約投稿用テキスト**を作成できます。
-        """
-    )
-
     # OAuth コールバック処理
     handle_oauth_callback()
 
-    if "google_creds" not in st.session_state:
-        st.session_state["google_creds"] = None
-    if "videos" not in st.session_state:
-        st.session_state["videos"] = []
-    if "templates" not in st.session_state:
-        st.session_state["templates"] = default_templates()
-    if "current_tweet" not in st.session_state:
-        st.session_state["current_tweet"] = ""
-    if "tweet_text" not in st.session_state:
-        st.session_state["tweet_text"] = ""
+    # セッション初期化
+    st.session_state.setdefault("google_creds", None)
+    st.session_state.setdefault("videos", [])
+    st.session_state.setdefault("templates", default_templates())
+    st.session_state.setdefault("current_tweet", "")
+    st.session_state.setdefault("tweet_text", "")
 
     creds: Optional[Credentials] = st.session_state["google_creds"]
-    templates: List[Template] = st.session_state["templates"]
 
-    # ----------------------
-    # サイドバー：認証
-    # ----------------------
+    # 認証UI
     st.sidebar.header("① Googleアカウント連携")
     if creds is None:
         st.sidebar.write("まずは Google アカウントで認証を行います。")
@@ -476,35 +347,31 @@ def main():
     else:
         st.sidebar.success("✅ Google認証済み")
         if st.sidebar.button("認証をリセットする（このブラウザだけ）"):
-            st.session_state["google_creds"] = None
-            st.session_state["videos"] = []
-            st.session_state["current_tweet"] = ""
-            st.session_state["tweet_text"] = ""
+            for k in ["google_creds", "videos", "current_tweet", "tweet_text",
+                      "templates_loaded", "tmpl_editor_name", "tmpl_editor_body", "tmpl_picker"]:
+                st.session_state.pop(k, None)
             st.rerun()
 
     if creds is None:
         st.info("左のサイドバーから Google アカウント連携を行ってください。")
         return
 
-    # 認証済みなら、テンプレ読み込み（初回のみ）
+    # テンプレ読み込み（初回）
     if "templates_loaded" not in st.session_state:
         try:
             st.session_state["templates"] = load_templates_from_sheets(creds)
-            st.session_state["templates_loaded"] = True
         except Exception as e:
             st.warning(f"テンプレ読み込みに失敗しました（初期テンプレを使用）：{e}")
-    templates = st.session_state["templates"]
+        st.session_state["templates_loaded"] = True
+    templates: List[Template] = st.session_state["templates"]
 
-    # ----------------------
-    # サイドバー：予約動画取得
-    # ----------------------
+    # 予約動画取得
     st.sidebar.header("② YouTube予約動画の取得")
     if st.sidebar.button("自分のチャンネルの予約動画リストを取得／更新"):
         try:
-            videos = fetch_scheduled_videos(creds)
-            st.session_state["videos"] = videos
-            if videos:
-                st.sidebar.success(f"{len(videos)} 件の予約動画を取得しました。")
+            st.session_state["videos"] = fetch_scheduled_videos(creds)
+            if st.session_state["videos"]:
+                st.sidebar.success(f"{len(st.session_state['videos'])} 件の予約動画を取得しました。")
             else:
                 st.sidebar.warning("予約投稿中の動画が見つかりませんでした。")
         except Exception as e:
@@ -515,64 +382,48 @@ def main():
         st.info("左のサイドバーで「予約動画リストを取得／更新」を実行してください。")
         return
 
-    # ----------------------
-    # サイドバー：動画 & テンプレ選択
-    # ----------------------
+    # 対象動画 & テンプレ選択（サイドバー）
     st.sidebar.header("③ 対象動画とテンプレの選択")
     video_options = {f"{v.title} / {format_publish_at(v.publish_at_utc)}": v.video_id for v in videos}
     selected_label = st.sidebar.selectbox("予約動画を選んでください", list(video_options.keys()))
-    selected_video_id = video_options[selected_label]
-    current_video = next(v for v in videos if v.video_id == selected_video_id)
+    current_video = next(v for v in videos if v.video_id == video_options[selected_label])
 
-    template_names = {t.name: t.id for t in templates}
-    selected_template_label = st.sidebar.selectbox(
-        "テンプレ（ツイートの型）を選んでください",
-        list(template_names.keys()),
-    )
-    selected_template = next(t for t in templates if t.id == template_names[selected_template_label])
+    tmpl_map = {t.name: t.id for t in templates}
+    selected_tmpl_label = st.sidebar.selectbox("テンプレ（ツイートの型）を選んでください", list(tmpl_map.keys()))
+    selected_template = next(t for t in templates if t.id == tmpl_map[selected_tmpl_label])
 
-    # ----------------------
-    # メイン：動画情報 & テンプレ呼び出し
-    # ----------------------
+    # メイン：動画情報
     st.subheader("📝 自動生成と編集")
     st.write(f"**動画タイトル：** {current_video.title}")
     st.write(f"**公開予定日時：** {format_publish_at(current_video.publish_at_utc)}")
     st.write(f"**動画URL：** {current_video.url}")
 
-    # マーカー：概要欄用（直後のexpanderに灰色適用）
+    # 概要欄（灰色）
     st.markdown('<div class="marker-overview"></div>', unsafe_allow_html=True)
     with st.expander("概要欄を確認する"):
         st.text(current_video.description)
 
-    # テンプレ呼び出し（統合：押したら差し込みまで自動）
+    # テンプレ呼び出し（反映→閉じる）
     with st.popover("📄 テンプレを呼び出す（一覧から選択）", use_container_width=True):
         name_map = {(f"★ {t.name}" if t.is_default else t.name): t.id for t in templates}
         labels_sorted = sorted(name_map.keys(), key=lambda x: (not x.startswith("★ "), x.lower()))
         sel_label = st.radio("テンプレを選んでください", options=labels_sorted, index=0)
         sel_tmpl = next(t for t in templates if t.id == name_map[sel_label])
-
         st.text_area("プレビュー", value=sel_tmpl.body, height=140, disabled=True)
-
         c1, c2 = st.columns(2)
         with c1:
             if st.button("このテンプレを本文に反映する（自動差し込み）", use_container_width=True, key=f"apply_auto_{sel_tmpl.id}"):
                 snippet = extract_snippet(current_video.description)
                 tweet = build_tweet_from_template(sel_tmpl.body, current_video, snippet)
-                st.session_state["current_tweet"] = tweet
                 st.session_state["tweet_text"] = tweet
+                st.session_state["current_tweet"] = tweet
                 st.success("テンプレ＋差し込みで本文を作成・反映しました。")
                 st.rerun()
         with c2:
-            # 明示的に閉じるボタン（押下で再実行→Popoverは閉じた状態から描画されます）
             if st.button("このウィンドウを閉じる", use_container_width=True, key=f"close_pop_{sel_tmpl.id}"):
                 st.rerun()
 
-    # ----------------------
-    # ツイート本文（ここに最終確認＆コピーを統合）
-    # ----------------------
-    if "tweet_text" not in st.session_state:
-        st.session_state["tweet_text"] = st.session_state["current_tweet"]
-
+    # ツイート本文（最終確認＆コピー統合）
     tweet_text = st.text_area(
         "✏️ ツイート本文（ここで自由に編集できます。改行もそのまま反映されます）",
         key="tweet_text",
@@ -580,24 +431,20 @@ def main():
     )
     st.session_state["current_tweet"] = tweet_text
 
-    # 公開予定日時（本文欄の直下に表示）
     st.info(f"⏰ この動画の公開予定日時： {format_publish_at(current_video.publish_at_utc)}")
 
-    # 文字数（本文/URL内訳）表示
     body_units, url_units, url_count = count_units_breakdown(tweet_text)
     total_units = body_units + url_units
     if total_units > 280:
-        st.error(f"現在 {total_units}字（本文{body_units}字 + URL{url_units}字 / URL本数 {url_count}） － 280字を超えています。")
+        st.error(f"現在 {total_units}字（本文{body_units}字 + URL{url_units}字 / URL本数 {url_count}）－ 280字を超えています。")
     else:
         st.write(f"現在 **{total_units}字（本文{body_units}字 + URL{url_units}字）** ／ 280字")
 
-    # コピー（本文欄の直下に設置）
     html(
         f"""
         <div style="margin: 0.5rem 0 1rem 0;">
-          <button
-            style="padding:8px 14px;border-radius:8px;border:1px solid #aaa;cursor:pointer;"
-            onclick='navigator.clipboard.writeText({json.dumps(tweet_text)})'>
+          <button style="padding:8px 14px;border-radius:8px;border:1px solid #aaa;cursor:pointer;"
+                  onclick='navigator.clipboard.writeText({json.dumps(tweet_text)})'>
             クリップボードにコピー
           </button>
           <span style="margin-left:8px;color:#666;font-size:0.9rem;">本文全体をコピーします。</span>
@@ -606,120 +453,103 @@ def main():
         height=60,
     )
 
-    # ----------------------
-    # マーカー：テンプレ編集用（直後のexpanderに緑＋青文字適用）
-    # ----------------------
-    st.markdown('<div class="marker-template"></div>', unsafe_allow_html=True)
-    with st.expander("🔧 テンプレ編集（今選んでいるテンプレを直接編集できます）"):
-        tmpl_name = st.text_input(
-            "テンプレ名",
-            value=selected_template.name,
-            key=f"tmpl_name_{selected_template.id}",
-            help="テンプレ一覧で表示される名前です。",
-        )
-
-        tmpl_body_key = f"tmpl_body_{selected_template.id}"
-        if tmpl_body_key not in st.session_state:
-            st.session_state[tmpl_body_key] = selected_template.body or ""
-
-        tmpl_body = st.text_area(
-            "テンプレ本文",
-            key=tmpl_body_key,
-            height=150,
-            help="下の「差し込みキーワード」ボタンを使うと、タイトルやURLなどを自動で入れられます。",
-        )
-
-        col_def, col_save, col_del = st.columns(3)
-        with col_def:
-            tmpl_default = st.checkbox(
-                "このテンプレをデフォルトにする",
-                value=selected_template.is_default,
-                key=f"tmpl_default_{selected_template.id}",
-            )
-
-        st.markdown("##### 差し込みキーワードを挿入する")
-        st.caption("ボタンを押すと、テンプレ本文の末尾にキーワードが追加されます。")
-
-        def append_placeholder(ph: str):
-            cur = st.session_state.get(tmpl_body_key, "")
-            cur = "" if cur is None else str(cur)
-            ph = "" if ph is None else str(ph)
-            st.session_state.setdefault(tmpl_body_key, "")
-            st.session_state[tmpl_body_key] = cur + ph
-            st.rerun()
-
-        col_ins1, col_ins2, col_ins3, col_ins4 = st.columns(4)
-        with col_ins1:
-            if st.button("タイトル", key=f"ins_title_{selected_template.id}"):
-                append_placeholder("{title}")
-        with col_ins2:
-            if st.button("概要（自動要約）", key=f"ins_snippet_{selected_template.id}"):
-                append_placeholder("{snippet}")
-        with col_ins3:
-            if st.button("動画URL", key=f"ins_url_{selected_template.id}"):
-                append_placeholder("{url}")
-        with col_ins4:
-            if st.button("公開日時", key=f"ins_publish_{selected_template.id}"):
-                append_placeholder("{publish_at}")
-
-        st.markdown("###### 差し込みキーワードの意味")
-        st.code("{title}", language=None)
-        st.code("{snippet}", language=None)
-        st.code("{url}", language=None)
-        st.code("{publish_at}", language=None)
-
-        with col_save:
-            # 上書き保存
-            if st.button("💾 このテンプレを保存", key=f"save_tmpl_{selected_template.id}"):
-                body_to_save = st.session_state.get(tmpl_body_key, selected_template.body or "")
-                for t in templates:
-                    if t.id == selected_template.id:
-                        t.name = tmpl_name
-                        t.body = body_to_save
-                        t.is_default = tmpl_default
-                if tmpl_default:
-                    for t in templates:
-                        if t.id != selected_template.id:
-                            t.is_default = False
-                st.session_state["templates"] = templates
-                try:
-                    save_templates_to_sheets(creds, templates)
-                    st.success("テンプレをスプレッドシートに保存しました。")
-                except Exception as e:
-                    st.error(f"テンプレの保存に失敗しました：{e}")
-
-            # 追記保存（ラベル変更）
-            if st.button("➕ このテンプレを新規追加", key=f"append_tmpl_{selected_template.id}"):
-                body_to_save = st.session_state.get(tmpl_body_key, selected_template.body or "")
+    # 本文→テンプレに「新規追加」ボタン（ここに追加）
+    st.markdown("#### ➕ この本文をテンプレとして新規追加")
+    ctn1, ctn2 = st.columns([3, 1])
+    default_new_name = f"本文から作成 {datetime.now().strftime('%Y/%m/%d %H:%M')}"
+    new_name = ctn1.text_input("テンプレ名（新規）", value=default_new_name, key="new_tmpl_from_body_name")
+    with ctn2:
+        if st.button("新規追加", key="append_new_from_body", use_container_width=True):
+            try:
                 new_id = next_template_id(templates)
-                new_tmpl = Template(
-                    id=new_id,
-                    name=tmpl_name,
-                    body=body_to_save,
-                    is_default=tmpl_default,
-                )
+                new_tmpl = Template(id=new_id, name=new_name.strip() or default_new_name, body=tweet_text, is_default=False)
+                append_template_to_sheets(creds, new_tmpl)
+                st.session_state["templates"] = templates + [new_tmpl]
+                st.success(f"本文をテンプレとして新規追加しました（ID={new_id}）。")
+                st.rerun()
+            except Exception as e:
+                st.error(f"新規追加に失敗しました：{e}")
+
+    # テンプレ編集（緑＋青文字）— 選択式リストでエディタ内容を差し替え
+    st.markdown('<div class="marker-template"></div>', unsafe_allow_html=True)
+    with st.expander("🔧 テンプレ編集（選択→内容を編集→保存）"):
+        # エディタ用セッション値を用意（デフォルトは本文をベース）
+        st.session_state.setdefault("tmpl_picker", "本文から作成（現在の本文）")
+        st.session_state.setdefault("tmpl_editor_name", f"本文から作成 {datetime.now().strftime('%Y/%m/%d %H:%M')}")
+        st.session_state.setdefault("tmpl_editor_body", st.session_state.get("tweet_text", ""))
+
+        # 選択肢作成
+        picker_options = ["本文から作成（現在の本文）"] + [t.name for t in templates]
+        picked = st.selectbox("テンプレを選択", picker_options, index=picker_options.index(st.session_state["tmpl_picker"]))
+
+        # 選択が変わったら内容を差し替え
+        if picked != st.session_state["tmpl_picker"]:
+            st.session_state["tmpl_picker"] = picked
+            if picked == "本文から作成（現在の本文）":
+                st.session_state["tmpl_editor_name"] = f"本文から作成 {datetime.now().strftime('%Y/%m/%d %H:%M')}"
+                st.session_state["tmpl_editor_body"] = st.session_state.get("tweet_text", "")
+            else:
+                t = next(t for t in templates if t.name == picked)
+                st.session_state["tmpl_editor_name"] = t.name
+                st.session_state["tmpl_editor_body"] = t.body
+
+        # 編集フィールド
+        ed_name = st.text_input("テンプレ名", key="tmpl_editor_name")
+        ed_body = st.text_area("テンプレ本文", key="tmpl_editor_body", height=160)
+
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            # 上書き保存（選択が既存テンプレのときのみ意味あり）
+            if st.button("💾 このテンプレを保存（上書き）"):
                 try:
+                    if st.session_state["tmpl_picker"] == "本文から作成（現在の本文）":
+                        st.warning("現在は『本文から作成』を選択中です。上書きではなく新規追加をご利用ください。")
+                    else:
+                        target = next(t for t in templates if t.name == st.session_state["tmpl_picker"])
+                        target.name = ed_name
+                        target.body = ed_body
+                        save_templates_to_sheets(creds, templates)
+                        # 名前が変わった場合はピッカーも更新
+                        st.session_state["tmpl_picker"] = ed_name
+                        st.success("テンプレを上書き保存しました。")
+                        st.rerun()
+                except StopIteration:
+                    st.error("対象テンプレが見つかりませんでした。")
+                except Exception as e:
+                    st.error(f"保存に失敗しました：{e}")
+        with c2:
+            # 新規追加（編集内容を新規テンプレとして）
+            if st.button("➕ このテンプレを新規追加"):
+                try:
+                    new_id = next_template_id(templates)
+                    new_tmpl = Template(id=new_id, name=ed_name.strip() or f"新規テンプレ {new_id}", body=ed_body, is_default=False)
                     append_template_to_sheets(creds, new_tmpl)
                     st.session_state["templates"] = templates + [new_tmpl]
-                    st.success(f"テンプレを新規行（ID={new_id}）として追記しました。")
+                    st.session_state["tmpl_picker"] = new_tmpl.name
+                    st.success(f"テンプレを新規追加しました（ID={new_id}）。")
                     st.rerun()
                 except Exception as e:
-                    st.error(f"テンプレの新規追加に失敗しました：{e}")
-
-        with col_del:
-            if st.button("🗑 このテンプレを削除", key=f"del_tmpl_{selected_template.id}"):
-                if len(templates) <= 1:
-                    st.warning("テンプレは最低1件必要なため、削除できません。")
+                    st.error(f"新規追加に失敗しました：{e}")
+        with c3:
+            # 削除（既存のみ）
+            if st.button("🗑 このテンプレを削除"):
+                if st.session_state["tmpl_picker"] == "本文から作成（現在の本文）":
+                    st.warning("『本文から作成』は削除対象ではありません。")
                 else:
-                    new_templates = [t for t in templates if t.id != selected_template.id]
-                    st.session_state["templates"] = new_templates
                     try:
-                        save_templates_to_sheets(creds, new_templates)
-                        st.success("テンプレを削除しました。")
-                        st.rerun()
+                        remaining = [t for t in templates if t.name != st.session_state["tmpl_picker"]]
+                        if len(remaining) == len(templates):
+                            st.warning("削除対象のテンプレが見つかりません。")
+                        elif not remaining:
+                            st.warning("テンプレは最低1件必要なため、削除できません。")
+                        else:
+                            save_templates_to_sheets(creds, remaining)
+                            st.session_state["templates"] = remaining
+                            st.session_state["tmpl_picker"] = "本文から作成（現在の本文）"
+                            st.success("テンプレを削除しました。")
+                            st.rerun()
                     except Exception as e:
-                        st.error(f"テンプレの削除に失敗しました：{e}")
-
+                        st.error(f"削除に失敗しました：{e}")
 
 if __name__ == "__main__":
     main()
