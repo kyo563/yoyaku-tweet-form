@@ -306,10 +306,8 @@ def html_escape(s: str) -> str:
 def highlight_placeholders(text: str) -> str:
     """テンプレ本文内の {title}|{snippet}|{url}|{publish_at} を青でハイライトするHTMLを返す"""
     esc = html_escape(text)
-    # 置換はエスケープ後のテキストに対してプレーンマッチで行う
     def repl(m):
         return f'<span style="color:#0b57d0; font-weight:600;">{m.group(0)}</span>'
-    # ただし esc には { が含まれるので、そのまま正規表現でOK
     return PLACEHOLDER_REGEX.sub(repl, esc).replace("\n", "<br>")
 
 # ==============================
@@ -451,15 +449,13 @@ def main():
             if st.button("このウィンドウを閉じる", use_container_width=True, key=f"close_pop_{sel_tmpl.id}"):
                 st.rerun()
 
-    # ツイート本文（入力エリア）
-    tweet_text = st.text_area(
+    # ツイート本文（入力エリア）— 再代入は禁止（参照のみ）
+    st.text_area(
         "✏️ ツイート本文（ここで自由に編集できます。改行もそのまま反映されます）",
         key="tweet_text",
         height=240,
     )
-    # ここで必ず最新値を取得
     tweet_text = st.session_state.get("tweet_text", "")
-    st.session_state["tweet_text"] = tweet_text
 
     st.info(f"⏰ この動画の公開予定日時： {format_publish_at(current_video.publish_at_utc)}")
 
@@ -472,7 +468,6 @@ def main():
         st.write(f"現在 **{total_units}字（本文{body_units}字 + URL{url_units}字）** ／ 280字")
 
     # === コピー＆「本文→テンプレ新規追加」：同じ見た目のボタン ===
-    # 新規追加は自動命名で保存（UIの重複フィールドは削除）
     html(
         """
         <div style="margin: 0.5rem 0 1rem 0; display:flex; gap:8px; flex-wrap:wrap;">
@@ -550,7 +545,7 @@ def main():
         ed_name = st.text_input("テンプレ名", key="tmpl_editor_name")
         ed_body = st.text_area("テンプレ本文", key="tmpl_editor_body", height=160)
 
-        # ハイライト付きプレビューを表示
+        # ハイライト付きプレビュー
         st.markdown("**テンプレ本文プレビュー（プレースホルダを青で強調）**")
         st.markdown(f'<div class="tmpl-preview-box">{highlight_placeholders(ed_body)}</div>', unsafe_allow_html=True)
 
@@ -607,7 +602,6 @@ def main():
         st.markdown("---")
         st.markdown("#### 📎 正規表現スニペット（クリックでコピー）")
 
-        # 用意する正規表現と説明
         regex_snippets = [
             (r"\{title\}", "動画タイトルのプレースホルダに一致します。"),
             (r"\{snippet\}", "概要欄から自動抽出した短文のプレースホルダに一致します。"),
@@ -617,7 +611,6 @@ def main():
             (r"#[\\w\\p{Han}\\p{Hiragana}\\p{Katakana}]+", "ハッシュタグにマッチ（和文含む想定、環境によりUnicodeクラス対応差あり）。"),
         ]
 
-        # コピー用HTML（f-string回避）
         chips_html = []
         for patt, desc in regex_snippets:
             patt_json = json.dumps(patt)
