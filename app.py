@@ -295,22 +295,6 @@ def next_template_id(existing: List[Template]) -> str:
     return str(max(nums) + 1) if nums else uuid.uuid4().hex[:8]
 
 # ==============================
-# 補助：テンプレ本文ハイライト（プレビュー）
-# ==============================
-
-PLACEHOLDER_REGEX = re.compile(r"\{(title|snippet|url|publish_at)\}")
-
-def html_escape(s: str) -> str:
-    return py_html.escape(s, quote=False)
-
-def highlight_placeholders(text: str) -> str:
-    """テンプレ本文内の {title}|{snippet}|{url}|{publish_at} を青でハイライトするHTMLを返す"""
-    esc = html_escape(text)
-    def repl(m):
-        return f'<span style="color:#0b57d0; font-weight:600;">{m.group(0)}</span>'
-    return PLACEHOLDER_REGEX.sub(repl, esc).replace("\n", "<br>")
-
-# ==============================
 # アプリ本体
 # ==============================
 
@@ -318,7 +302,7 @@ def main():
     st.set_page_config(page_title="予約投稿作成フォーム", layout="wide")
     st.title("📝 予約投稿作成フォーム（YouTube×X）")
 
-    # ===== CSS（概要＝灰、テンプレ編集＝緑/青）=====
+    # ===== CSS（概要＝灰、テンプレ編集＝緑/青見出しのみ）=====
     st.markdown(
         """
         <style>
@@ -335,18 +319,13 @@ def main():
             background: #cdefd8; color: #0b57d0; border-radius: 10px; font-weight: 600;
         }
         div[data-testid="stExpander"] { margin-bottom: 0.75rem; }
-        .tmpl-preview-box {
-            border:1px dashed #b7e1c0; background:#f7fffa; padding:10px; border-radius:8px; margin-top:6px;
-            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
-            font-size: 0.95rem; line-height:1.6;
-        }
         .regex-box { border:1px solid #ddd; padding:10px; border-radius:8px; background:#fafafa; }
-        .regex-chip {
-            display:inline-flex; align-items:center; gap:6px; margin:4px 6px 4px 0;
-            padding:6px 10px; border:1px solid #bbb; border-radius:20px; background:#fff; cursor:pointer;
+        .regex-row { display:flex; align-items:center; gap:10px; margin:6px 0; flex-wrap:wrap; }
+        .regex-copy {
+            padding:6px 10px; border:1px solid #bbb; border-radius:8px; background:#fff; cursor:pointer;
             font-family: ui-monospace, monospace; font-size:0.9rem;
         }
-        .regex-desc { color:#333; margin: 2px 0 10px 0; font-size:0.9rem; }
+        .muted { color:#555; font-size:0.9rem; }
         </style>
         """,
         unsafe_allow_html=True,
@@ -430,99 +409,52 @@ def main():
     with st.expander("概要欄を確認する"):
         st.text(current_video.description)
 
-    # テンプレ呼び出し（反映→閉じる）
+    # テンプレ呼び出し（適用のみ。閉じるボタンは削除）
     with st.popover("📄 テンプレを呼び出す（一覧から選択）", use_container_width=True):
         name_map = {(f"★ {t.name}" if t.is_default else t.name): t.id for t in templates}
         labels_sorted = sorted(name_map.keys(), key=lambda x: (not x.startswith("★ "), x.lower()))
         sel_label = st.radio("テンプレを選んでください", options=labels_sorted, index=0)
         sel_tmpl = next(t for t in templates if t.id == name_map[sel_label])
         st.text_area("プレビュー", value=sel_tmpl.body, height=140, disabled=True)
-        c1, c2 = st.columns(2)
-        with c1:
-            if st.button("このテンプレを本文に反映する（自動差し込み）", use_container_width=True, key=f"apply_auto_{sel_tmpl.id}"):
-                snippet = extract_snippet(current_video.description)
-                tweet = build_tweet_from_template(sel_tmpl.body, current_video, snippet)
-                st.session_state["tweet_text"] = tweet
-                st.success("テンプレ＋差し込みで本文を作成・反映しました。")
-                st.rerun()
-        with c2:
-            if st.button("このウィンドウを閉じる", use_container_width=True, key=f"close_pop_{sel_tmpl.id}"):
-                st.rerun()
+        if st.button("このテンプレを本文に反映する（自動差し込み）", use_container_width=True, key=f"apply_auto_{sel_tmpl.id}"):
+            snippet = extract_snippet(current_video.description)
+            tweet = build_tweet_from_template(sel_tmpl.body, current_video, snippet)
+            st.session_state["tweet_text"] = tweet
+            st.success("テンプレ＋差し込みで本文を作成・反映しました。")
+            st.rerun()
 
-    # ツイート本文（入力エリア）— 再代入は禁止（参照のみ）
-    st.text_area(
+    # ツイート本文（戻り値を直接使用し、常に最新でカウント）
+    tweet_text = st.text_area(
         "✏️ ツイート本文（ここで自由に編集できます。改行もそのまま反映されます）",
         key="tweet_text",
         height=240,
     )
-    tweet_text = st.session_state.get("tweet_text", "")
 
     st.info(f"⏰ この動画の公開予定日時： {format_publish_at(current_video.publish_at_utc)}")
 
-    # 文字数カウント（本文/URL内訳）
-    body_units, url_units, url_count = count_units_breakdown(tweet_text)
+    # 文字数カウント（本文/URL内訳）— 戻り値 tweet_text を使用
+    body_units, url_units, url_count = count_units_breakdown(tweet_text or "")
     total_units = body_units + url_units
     if total_units > 280:
         st.error(f"現在 {total_units}字（本文{body_units}字 + URL{url_units}字 / URL本数 {url_count}）－ 280字を超えています。")
     else:
         st.write(f"現在 **{total_units}字（本文{body_units}字 + URL{url_units}字）** ／ 280字")
 
-    # === コピー＆「本文→テンプレ新規追加」：同じ見た目のボタン ===
+    # コピー（隠しボタンや追加保存は削除。コピーのみ提供）
     html(
         """
-        <div style="margin: 0.5rem 0 1rem 0; display:flex; gap:8px; flex-wrap:wrap;">
+        <div style="margin: 0.5rem 0 1rem 0;">
           <button
             style="padding:8px 14px;border-radius:8px;border:1px solid #aaa;cursor:pointer;"
             onclick='navigator.clipboard.writeText(__TEXT__)'>
             クリップボードにコピー
           </button>
-
-          <button
-            style="padding:8px 14px;border-radius:8px;border:1px solid #aaa;cursor:pointer;"
-            onclick="
-              (function(){
-                const btns = Array.from(window.parent.document.querySelectorAll('button'));
-                const tgt = btns.find(b => (b.innerText || '').trim() === '___HIDDEN_APPEND_NEW_TEMPLATE___');
-                if (tgt) tgt.click();
-              })();
-            ">
-            ➕ この本文をテンプレとして新規追加
-          </button>
-
-          <script>
-            (function(){
-              const hide = () => {
-                const btns = Array.from(window.parent.document.querySelectorAll('button'));
-                const tgt = btns.find(b => (b.innerText || '').trim() === '___HIDDEN_APPEND_NEW_TEMPLATE___');
-                if (tgt) tgt.style.display = 'none';
-              };
-              hide();
-              setTimeout(hide, 300);
-              setTimeout(hide, 800);
-              setTimeout(hide, 1500);
-            })();
-          </script>
         </div>
-        """.replace("__TEXT__", json.dumps(tweet_text)),
-        height=90,
+        """.replace("__TEXT__", json.dumps(tweet_text or "")),
+        height=60,
     )
 
-    # 隠しボタン（本文→テンプレ新規追加：自動命名）
-    hidden_label = "___HIDDEN_APPEND_NEW_TEMPLATE___"
-    if st.button(hidden_label, key="append_new_from_body", help="hidden-trigger-button"):
-        try:
-            new_id = next_template_id(templates)
-            body = st.session_state.get("tweet_text", "")
-            default_new_name = f"本文から作成 {datetime.now().strftime('%Y/%m/%d %H:%M')}"
-            new_tmpl = Template(id=new_id, name=default_new_name, body=body, is_default=False)
-            append_template_to_sheets(creds, new_tmpl)
-            st.session_state["templates"] = templates + [new_tmpl]
-            st.success(f"本文をテンプレとして新規追加しました（ID={new_id}）。")
-            st.rerun()
-        except Exception as e:
-            st.error(f"新規追加に失敗しました：{e}")
-
-    # テンプレ編集（緑＋青文字）— 選択→差し替え→保存
+    # テンプレ編集（プレビュー削除。色変更不可のためそのまま）
     st.markdown('<div class="marker-template"></div>', unsafe_allow_html=True)
     with st.expander("🔧 テンプレ編集（選択→内容を編集→保存）"):
         st.session_state.setdefault("tmpl_picker", "本文から作成（現在の本文）")
@@ -544,10 +476,6 @@ def main():
 
         ed_name = st.text_input("テンプレ名", key="tmpl_editor_name")
         ed_body = st.text_area("テンプレ本文", key="tmpl_editor_body", height=160)
-
-        # ハイライト付きプレビュー
-        st.markdown("**テンプレ本文プレビュー（プレースホルダを青で強調）**")
-        st.markdown(f'<div class="tmpl-preview-box">{highlight_placeholders(ed_body)}</div>', unsafe_allow_html=True)
 
         c1, c2, c3 = st.columns(3)
         with c1:
@@ -601,28 +529,26 @@ def main():
 
         st.markdown("---")
         st.markdown("#### 📎 正規表現スニペット（クリックでコピー）")
+        st.caption("下書き編集の補助用に、説明付きでテンプレ差込用の文言をコピーできます。")
 
-        regex_snippets = [
-            (r"\{title\}", "動画タイトルのプレースホルダに一致します。"),
-            (r"\{snippet\}", "概要欄から自動抽出した短文のプレースホルダに一致します。"),
-            (r"\{url\}", "動画URLのプレースホルダに一致します。"),
-            (r"\{publish_at\}", "公開予定日時のプレースホルダに一致します。"),
-            (r"https?://\\S+", "URL全般にマッチします（ツイート本文のURL抽出に利用）。"),
-            (r"#[\\w\\p{Han}\\p{Hiragana}\\p{Katakana}]+", "ハッシュタグにマッチ（和文含む想定、環境によりUnicodeクラス対応差あり）。"),
+        # 説明付きのコピー行（{title} などをコピー）
+        helper_items = [
+            ("タイトルを差し込む", "{title}", "動画タイトルが入ります。"),
+            ("概要（自動抜粋）を差し込む", "{snippet}", "概要欄から抽出した短文が入ります。"),
+            ("動画URLを差し込む", "{url}", "YouTubeの動画URLが入ります。"),
+            ("公開日時を差し込む", "{publish_at}", "例：2025/01/23 20:00"),
         ]
 
-        chips_html = []
-        for patt, desc in regex_snippets:
-            patt_json = json.dumps(patt)
-            chip = f"""
-            <div class="regex-desc">{py_html.escape(desc)}</div>
-            <div class="regex-chip" onclick='navigator.clipboard.writeText({patt_json})' title="クリックでコピー">
-                <span>📋</span><code>{py_html.escape(patt)}</code>
+        rows = []
+        for label, token, desc in helper_items:
+            row_html = f"""
+            <div class="regex-row">
+              <div><strong>{py_html.escape(label)}</strong> <span class="muted">— {py_html.escape(desc)}</span></div>
+              <button class="regex-copy" onclick='navigator.clipboard.writeText({json.dumps(token)})'>{py_html.escape(token)}</button>
             </div>
             """
-            chips_html.append(chip)
-
-        st.markdown(f'<div class="regex-box">{"".join(chips_html)}</div>', unsafe_allow_html=True)
+            rows.append(row_html)
+        st.markdown(f'<div class="regex-box">{"".join(rows)}</div>', unsafe_allow_html=True)
 
 if __name__ == "__main__":
     main()
