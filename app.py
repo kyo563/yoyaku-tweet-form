@@ -21,7 +21,6 @@ SCOPES = [
     "https://www.googleapis.com/auth/youtube.readonly",
     "https://www.googleapis.com/auth/spreadsheets",
 ]
-
 SPREADSHEET_ID = "1t34GoYFFHJdCsIjvbSGLEfD7W-cfeDgyAQoh9_u-oUU"  # 共有シートID
 URL_UNITS = 24  # X(Twitter) URL固定長（安全側24）
 
@@ -440,29 +439,64 @@ def main():
     else:
         st.write(f"現在 **{total_units}字（本文{body_units}字 + URL{url_units}字）** ／ 280字")
 
+    # コピー（HTMLボタン）
     html(
         f"""
-        <div style="margin: 0.5rem 0 1rem 0;">
-          <button style="padding:8px 14px;border-radius:8px;border:1px solid #aaa;cursor:pointer;"
-                  onclick='navigator.clipboard.writeText({json.dumps(tweet_text)})'>
+        <div style="margin: 0.5rem 0 1rem 0; display:flex; gap:8px; flex-wrap:wrap;">
+          <button
+            style="padding:8px 14px;border-radius:8px;border:1px solid #aaa;cursor:pointer;"
+            onclick='navigator.clipboard.writeText({json.dumps(tweet_text)})'>
             クリップボードにコピー
           </button>
-          <span style="margin-left:8px;color:#666;font-size:0.9rem;">本文全体をコピーします。</span>
+
+          <!-- 新規追加（本文→テンプレ）と同じ見た目のボタン -->
+          <button
+            style="padding:8px 14px;border-radius:8px;border:1px solid #aaa;cursor:pointer;"
+            onclick="
+              (function(){{
+                const btns = Array.from(window.parent.document.querySelectorAll('button'));
+                const tgt = btns.find(b => (b.innerText || '').trim() === '___HIDDEN_APPEND_NEW_TEMPLATE___');
+                if (tgt) tgt.click();
+              }})();
+            ">
+            ➕ この本文をテンプレとして新規追加
+          </button>
+
+          <script>
+            // 起動時に隠しボタンを非表示化
+            (function(){
+              const hide = () => {{
+                const btns = Array.from(window.parent.document.querySelectorAll('button'));
+                const tgt = btns.find(b => (b.innerText || '').trim() === '___HIDDEN_APPEND_NEW_TEMPLATE___');
+                if (tgt) tgt.style.display = 'none';
+              }};
+              // 何度か試す（Streamlitの再レンダ対策）
+              hide();
+              setTimeout(hide, 300);
+              setTimeout(hide, 800);
+              setTimeout(hide, 1500);
+            })();
+          </script>
         </div>
         """,
-        height=60,
+        height=90,
     )
 
-    # 本文→テンプレに「新規追加」ボタン（ここに追加）
+    # 本文→テンプレに「新規追加」ボタン（隠しボタン＋名前入力）
     st.markdown("#### ➕ この本文をテンプレとして新規追加")
     ctn1, ctn2 = st.columns([3, 1])
     default_new_name = f"本文から作成 {datetime.now().strftime('%Y/%m/%d %H:%M')}"
     new_name = ctn1.text_input("テンプレ名（新規）", value=default_new_name, key="new_tmpl_from_body_name")
+
+    # 隠しボタン：ラベルはユニークに（JSからクリック）
+    hidden_label = "___HIDDEN_APPEND_NEW_TEMPLATE___"
     with ctn2:
-        if st.button("新規追加", key="append_new_from_body", use_container_width=True):
+        if st.button(hidden_label, key="append_new_from_body", help="hidden-trigger-button"):
             try:
                 new_id = next_template_id(templates)
-                new_tmpl = Template(id=new_id, name=new_name.strip() or default_new_name, body=tweet_text, is_default=False)
+                body = st.session_state.get("tweet_text", "")
+                nm = (new_name or "").strip() or default_new_name
+                new_tmpl = Template(id=new_id, name=nm, body=body, is_default=False)
                 append_template_to_sheets(creds, new_tmpl)
                 st.session_state["templates"] = templates + [new_tmpl]
                 st.success(f"本文をテンプレとして新規追加しました（ID={new_id}）。")
@@ -470,19 +504,16 @@ def main():
             except Exception as e:
                 st.error(f"新規追加に失敗しました：{e}")
 
-    # テンプレ編集（緑＋青文字）— 選択式リストでエディタ内容を差し替え
+    # テンプレ編集（緑＋青文字）— 選択→差し替え→保存
     st.markdown('<div class="marker-template"></div>', unsafe_allow_html=True)
     with st.expander("🔧 テンプレ編集（選択→内容を編集→保存）"):
-        # エディタ用セッション値を用意（デフォルトは本文をベース）
         st.session_state.setdefault("tmpl_picker", "本文から作成（現在の本文）")
         st.session_state.setdefault("tmpl_editor_name", f"本文から作成 {datetime.now().strftime('%Y/%m/%d %H:%M')}")
         st.session_state.setdefault("tmpl_editor_body", st.session_state.get("tweet_text", ""))
 
-        # 選択肢作成
         picker_options = ["本文から作成（現在の本文）"] + [t.name for t in templates]
         picked = st.selectbox("テンプレを選択", picker_options, index=picker_options.index(st.session_state["tmpl_picker"]))
 
-        # 選択が変わったら内容を差し替え
         if picked != st.session_state["tmpl_picker"]:
             st.session_state["tmpl_picker"] = picked
             if picked == "本文から作成（現在の本文）":
@@ -493,13 +524,11 @@ def main():
                 st.session_state["tmpl_editor_name"] = t.name
                 st.session_state["tmpl_editor_body"] = t.body
 
-        # 編集フィールド
         ed_name = st.text_input("テンプレ名", key="tmpl_editor_name")
         ed_body = st.text_area("テンプレ本文", key="tmpl_editor_body", height=160)
 
         c1, c2, c3 = st.columns(3)
         with c1:
-            # 上書き保存（選択が既存テンプレのときのみ意味あり）
             if st.button("💾 このテンプレを保存（上書き）"):
                 try:
                     if st.session_state["tmpl_picker"] == "本文から作成（現在の本文）":
@@ -509,7 +538,6 @@ def main():
                         target.name = ed_name
                         target.body = ed_body
                         save_templates_to_sheets(creds, templates)
-                        # 名前が変わった場合はピッカーも更新
                         st.session_state["tmpl_picker"] = ed_name
                         st.success("テンプレを上書き保存しました。")
                         st.rerun()
@@ -518,11 +546,10 @@ def main():
                 except Exception as e:
                     st.error(f"保存に失敗しました：{e}")
         with c2:
-            # 新規追加（編集内容を新規テンプレとして）
             if st.button("➕ このテンプレを新規追加"):
                 try:
                     new_id = next_template_id(templates)
-                    new_tmpl = Template(id=new_id, name=ed_name.strip() or f"新規テンプレ {new_id}", body=ed_body, is_default=False)
+                    new_tmpl = Template(id=new_id, name=(ed_name or f"新規テンプレ {new_id}").strip(), body=ed_body, is_default=False)
                     append_template_to_sheets(creds, new_tmpl)
                     st.session_state["templates"] = templates + [new_tmpl]
                     st.session_state["tmpl_picker"] = new_tmpl.name
@@ -531,7 +558,6 @@ def main():
                 except Exception as e:
                     st.error(f"新規追加に失敗しました：{e}")
         with c3:
-            # 削除（既存のみ）
             if st.button("🗑 このテンプレを削除"):
                 if st.session_state["tmpl_picker"] == "本文から作成（現在の本文）":
                     st.warning("『本文から作成』は削除対象ではありません。")
