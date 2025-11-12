@@ -379,7 +379,7 @@ def main():
     st.write(f"**公開予定日時：** {format_publish_at(current_video.publish_at_utc)}")
     st.write(f"**動画URL：** {current_video.url}")
 
-    # 概要欄（背景スタイルはデフォルト）
+    # 概要欄
     with st.expander("概要欄を確認する"):
         st.text(current_video.description)
 
@@ -397,21 +397,19 @@ def main():
             st.success("テンプレ＋差し込みで本文を作成・反映しました。")
             st.rerun()
 
-    # ===== 現在のテンプレ（背景はデフォルトのまま）=====
+    # 現在のテンプレ
     st.markdown("#### 現在のテンプレ")
     st.write(f"**テンプレ名：** {selected_template.name}")
     st.code(selected_template.body or "(本文なし)", language=None)
 
-    # ===== テンプレ編集（“ツイート本文”ではなく『呼び出したテンプレ本文』を編集）=====
+    # テンプレ編集（呼び出したテンプレ本文を編集）
     with st.expander("🔧 テンプレ編集（選択→内容を編集→保存）"):
-        # デフォルトでサイドバー選択中テンプレをセット
         if st.session_state["tmpl_picker"] is None:
             st.session_state["tmpl_picker"] = selected_template.name
             st.session_state["tmpl_editor_name"] = selected_template.name
             st.session_state["tmpl_editor_body"] = selected_template.body
 
         picker_options = [t.name for t in templates]
-        # 選択肢：テンプレ一覧（“本文から作成”は外す）
         try:
             default_index = picker_options.index(st.session_state["tmpl_picker"])
         except ValueError:
@@ -436,7 +434,6 @@ def main():
                     target.name = ed_name
                     target.body = ed_body
                     save_templates_to_sheets(creds, templates)
-                    # 選択名の更新反映
                     st.session_state["tmpl_picker"] = ed_name
                     st.success("テンプレを上書き保存しました。")
                     st.rerun()
@@ -469,39 +466,35 @@ def main():
                     else:
                         save_templates_to_sheets(creds, remaining)
                         st.session_state["templates"] = remaining
-                        # 先頭テンプレにフォールバック
                         st.session_state["tmpl_picker"] = remaining[0].name
                         st.success("テンプレを削除しました。")
                         st.rerun()
                 except Exception as e:
                     st.error(f"削除に失敗しました：{e}")
 
-        # ▼ 追加：現在のテンプレでツイートを再生成
+        # 現在のテンプレでツイートを再生成
         st.markdown("---")
         if st.button("🌀 現在のテンプレを使用して再出力"):
             snippet = extract_snippet(current_video.description)
-            # 現在エディタに表示中のテンプレ本文で再生成
             tweet = build_tweet_from_template(st.session_state["tmpl_editor_body"], current_video, snippet)
             st.session_state["tweet_text"] = tweet
             st.success("現在のテンプレでツイート本文を再生成しました。")
             st.rerun()
 
-        # 差し込みキーワードの意味（説明＋コードブロック）
-# 差し込みキーワードの意味（折りたたみ）
-st.markdown("---")
-with st.expander("差し込みキーワードの意味", expanded=False):
-    st.markdown("**タイトル**（動画タイトルがそのまま入ります）")
-    st.code("{title}", language=None)
+        # 差し込みキーワードの意味（折りたたみ）
+        st.markdown("---")
+        with st.expander("差し込みキーワードの意味", expanded=False):
+            st.markdown("**タイトル**（動画タイトルがそのまま入ります）")
+            st.code("{title}", language=None)
 
-    st.markdown("**概要（自動要約）**（概要欄から自動で抜き出した短い説明文が入ります）")
-    st.code("{snippet}", language=None)
+            st.markdown("**概要（自動要約）**（概要欄から自動で抜き出した短い説明文が入ります）")
+            st.code("{snippet}", language=None)
 
-    st.markdown("**動画URL**（YouTubeの動画URLが入ります）")
-    st.code("{url}", language=None)
+            st.markdown("**動画URL**（YouTubeの動画URLが入ります）")
+            st.code("{url}", language=None)
 
-    st.markdown("**公開日時**（動画の公開予定日時が入ります。例：2025/01/23 20:00）")
-    st.code("{publish_at}", language=None)
-
+            st.markdown("**公開日時**（動画の公開予定日時が入ります。例：2025/01/23 20:00）")
+            st.code("{publish_at}", language=None)
 
     # ===== ツイート本文 =====
     tweet_text = st.text_area(
@@ -521,7 +514,8 @@ with st.expander("差し込みキーワードの意味", expanded=False):
         st.write(f"現在 **{total_units}字（本文{body_units}字 + URL{url_units}字）** ／ 280字")
 
     # コピー
-    safe_text = (tweet_text or "").replace("\\", "\\\\").replace("'", "\\'").replace("\n", "\\n")
+    safe_text = (tweet_text or "")
+    safe_text = safe_text.replace("\\", "\\\\").replace('"', '\\"').replace("'", "\\'").replace("\n", "\\n")
     html(
         f"""
         <div style="margin: 0.5rem 0 1rem 0;">
