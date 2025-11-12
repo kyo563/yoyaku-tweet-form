@@ -1,8 +1,6 @@
 import re
 import unicodedata
 import uuid
-import json
-import html as py_html
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import List, Optional
@@ -319,12 +317,6 @@ def main():
             background: #cdefd8; color: #0b57d0; border-radius: 10px; font-weight: 600;
         }
         div[data-testid="stExpander"] { margin-bottom: 0.75rem; }
-        .regex-box { border:1px solid #ddd; padding:10px; border-radius:8px; background:#fafafa; }
-        .regex-row { display:flex; align-items:center; gap:10px; margin:6px 0; flex-wrap:wrap; }
-        .regex-copy {
-            padding:6px 10px; border:1px solid #bbb; border-radius:8px; background:#fff; cursor:pointer;
-            font-family: ui-monospace, monospace; font-size:0.9rem;
-        }
         .muted { color:#555; font-size:0.9rem; }
         </style>
         """,
@@ -409,7 +401,7 @@ def main():
     with st.expander("概要欄を確認する"):
         st.text(current_video.description)
 
-    # テンプレ呼び出し（適用のみ。閉じるボタンは削除）
+    # テンプレ呼び出し（適用のみ）
     with st.popover("📄 テンプレを呼び出す（一覧から選択）", use_container_width=True):
         name_map = {(f"★ {t.name}" if t.is_default else t.name): t.id for t in templates}
         labels_sorted = sorted(name_map.keys(), key=lambda x: (not x.startswith("★ "), x.lower()))
@@ -432,7 +424,7 @@ def main():
 
     st.info(f"⏰ この動画の公開予定日時： {format_publish_at(current_video.publish_at_utc)}")
 
-    # 文字数カウント（本文/URL内訳）— 戻り値 tweet_text を使用
+    # 文字数カウント（本文/URL内訳）
     body_units, url_units, url_count = count_units_breakdown(tweet_text or "")
     total_units = body_units + url_units
     if total_units > 280:
@@ -440,7 +432,7 @@ def main():
     else:
         st.write(f"現在 **{total_units}字（本文{body_units}字 + URL{url_units}字）** ／ 280字")
 
-    # コピー（隠しボタンや追加保存は削除。コピーのみ提供）
+    # コピーのみ
     html(
         """
         <div style="margin: 0.5rem 0 1rem 0;">
@@ -450,11 +442,11 @@ def main():
             クリップボードにコピー
           </button>
         </div>
-        """.replace("__TEXT__", json.dumps(tweet_text or "")),
+        """.replace("__TEXT__", (tweet_text or "").replace("\\", "\\\\").replace("'", "\\'").replace("\n", "\\n")),
         height=60,
     )
 
-    # テンプレ編集（プレビュー削除。色変更不可のためそのまま）
+    # テンプレ編集（プレビューなし）
     st.markdown('<div class="marker-template"></div>', unsafe_allow_html=True)
     with st.expander("🔧 テンプレ編集（選択→内容を編集→保存）"):
         st.session_state.setdefault("tmpl_picker", "本文から作成（現在の本文）")
@@ -528,27 +520,19 @@ def main():
                         st.error(f"削除に失敗しました：{e}")
 
         st.markdown("---")
-        st.markdown("#### 📎 正規表現スニペット（クリックでコピー）")
-        st.caption("下書き編集の補助用に、説明付きでテンプレ差込用の文言をコピーできます。")
+        # ====== ご指定の表記に変更（説明＋コードブロック）======
+        st.markdown("###### 差し込みキーワードの意味")
+        st.markdown("**タイトル**（動画タイトルがそのまま入ります）")
+        st.code("{title}", language=None)
 
-        # 説明付きのコピー行（{title} などをコピー）
-        helper_items = [
-            ("タイトルを差し込む", "{title}", "動画タイトルが入ります。"),
-            ("概要（自動抜粋）を差し込む", "{snippet}", "概要欄から抽出した短文が入ります。"),
-            ("動画URLを差し込む", "{url}", "YouTubeの動画URLが入ります。"),
-            ("公開日時を差し込む", "{publish_at}", "例：2025/01/23 20:00"),
-        ]
+        st.markdown("**概要（自動要約）**（概要欄から自動で抜き出した短い説明文が入ります）")
+        st.code("{snippet}", language=None)
 
-        rows = []
-        for label, token, desc in helper_items:
-            row_html = f"""
-            <div class="regex-row">
-              <div><strong>{py_html.escape(label)}</strong> <span class="muted">— {py_html.escape(desc)}</span></div>
-              <button class="regex-copy" onclick='navigator.clipboard.writeText({json.dumps(token)})'>{py_html.escape(token)}</button>
-            </div>
-            """
-            rows.append(row_html)
-        st.markdown(f'<div class="regex-box">{"".join(rows)}</div>', unsafe_allow_html=True)
+        st.markdown("**動画URL**（YouTubeの動画URLが入ります）")
+        st.code("{url}", language=None)
+
+        st.markdown("**公開日時**（動画の公開予定日時が入ります。例：2025/01/23 20:00）")
+        st.code("{publish_at}", language=None)
 
 if __name__ == "__main__":
     main()
