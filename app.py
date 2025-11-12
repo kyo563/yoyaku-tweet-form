@@ -69,6 +69,9 @@ def truncate_to_limit(text: str, max_units: int = 280) -> str:
     return truncated
 
 def count_units_breakdown(text: str) -> tuple[int, int, int]:
+    """
+    本文ユニット, URLユニット(=URL_UNITS×本数), URL本数 を返す
+    """
     url_pattern = re.compile(r"https?://\S+")
     body_units, url_count, pos = 0, 0, 0
     for m in url_pattern.finditer(text):
@@ -78,7 +81,10 @@ def count_units_breakdown(text: str) -> tuple[int, int, int]:
     body_units += count_units(text[pos:])
     return body_units, URL_UNITS * url_count, url_count
 
-def extract_snippet(description: str, max_units: int = 200) -> str:
+def extract_snippet(description: str, max_units: int = 250) -> str:
+    """
+    概要欄からURL/見出し行を除いた短文を生成。最大max_units=250に制限。
+    """
     lines = description.splitlines()
     cleaned = []
     for line in lines:
@@ -96,7 +102,22 @@ def format_publish_at(dt: datetime, tz_name: str = "Asia/Tokyo") -> str:
         local = dt
     return local.strftime("%Y/%m/%d %H:%M")
 
+def format_publish_at_pretty(dt: datetime, tz_name: str = "Asia/Tokyo") -> str:
+    """
+    m月d日(曜) 形式で返す。曜は日本語の一文字（例：水）。
+    """
+    try:
+        from zoneinfo import ZoneInfo
+        local = dt.astimezone(ZoneInfo(tz_name))
+    except Exception:
+        local = dt
+    wd = ["月", "火", "水", "木", "金", "土", "日"][local.weekday()]
+    return f"{local.month}月{local.day}日({wd})"
+
 def ensure_url_and_limit(text: str, url: str, max_units: int = 280) -> str:
+    """
+    URLは常に保持しつつ280以内に収める最終ガード。
+    """
     if not url or url not in text:
         return text if count_units(text) <= max_units else truncate_to_limit(text, max_units=max_units)
     idx = text.rfind(url)
@@ -108,11 +129,97 @@ def ensure_url_and_limit(text: str, url: str, max_units: int = 280) -> str:
         return url
     return truncate_to_limit(prefix, max_units=allowed) + url
 
+def prioritize_and_fit(
+    raw: str,
+    url_text: str,
+    title_text: str,
+    snippet_text: str,
+    publish_text: str,
+    max_units: int = 280,
+) -> str:
+    """
+    優先度 {url}>{title}>{snippet}>{publish_at} で280以内に調整。
+    - まず publish_at を全文から除去（必要時）
+    - 次に snippet を縮める（0まで許容、初期上限は250）
+    - 次に title を縮める（最小は0）
+    - 最後に ensure_url_and_limit でURL以外を切り詰め
+    """
+    def units(s: str) -> int:
+        bu, uu, _ = count_units_breakdown(s)
+        return bu + uu
+
+    text = raw
+
+    # すでにOKなら即返す
+    if units(text) <= max_units:
+        return text
+
+    # 1) publish_at 除去（出現箇所すべて）
+    if publish_text and publish_text in text:
+        # 前後の余分な空白/改行も極力除去
+        pattern = r"[ \t]*" + re.escape(publish_text) + r"[ \t]*"
+        text = re.sub(pattern, "", text)
+        # 連続改行を1つに
+        text = re.sub(r"\n{3,}", "\n\n", text).strip()
+        if units(text) <= max_units:
+            return text
+
+    # 2) snippet 短縮
+    if snippet_text and snippet_text in text:
+        # 現在のスニペットユニット数
+        current_snip_units = count_units(snippet_text)
+        # 残りを計算： snippet に割り当てられる上限
+        over = units(text) - max_units
+        target_snip_units = max(0, current_snip_units - over)
+        if target_snip_units < current_snip_units:
+            new_snip = truncate_to_limit(snippet_text, max_units=target_snip_units)
+            text = text.replace(snippet_text, new_snip)
+            snippet_text = new_snip  # 後段の計算でも使う
+            if units(text) <= max_units:
+                return text
+
+    # 3) title 短縮
+    if title_text and title_text in text:
+        current_title_units = count_units(title_text)
+        over = units(text) - max_units
+        target_title_units = max(0, current_title_units - over)
+        if target_title_units < current_title_units:
+            new_title = truncate_to_limit(title_text, max_units=target_title_units)
+            text = text.replace(title_text, new_title)
+            title_text = new_title
+            if units(text) <= max_units:
+                return text
+
+    # 4) 最後の砦
+    text = ensure_url_and_limit(text, url_text, max_units=max_units)
+    return text
+
 def build_tweet_from_template(template_body: str, video: Video, snippet: str, max_units: int = 280) -> str:
-    publish_at_str = format_publish_at(video.publish_at_utc)
+    """
+    テンプレに差し込み後、優先度ルールで280unit以内に収める。
+    """
+    # 日付は m月d日(曜) 形式へ
+    publish_at_pretty = format_publish_at_pretty(video.publish_at_utc)
     url = video.url
-    raw = template_body.format(title=video.title, url=url, snippet=snippet, publish_at=publish_at_str)
-    return ensure_url_and_limit(raw, url, max_units=max_units)
+    title = video.title
+    # snippetはextract時点で最大250unitに制限済み
+
+    raw = template_body.format(
+        title=title,
+        url=url,
+        snippet=snippet,
+        publish_at=publish_at_pretty,
+    )
+    # 優先度ルールで調整
+    tweet = prioritize_and_fit(
+        raw=raw,
+        url_text=url,
+        title_text=title,
+        snippet_text=snippet,
+        publish_text=publish_at_pretty,
+        max_units=max_units,
+    )
+    return tweet
 
 # ==============================
 # Google OAuth
@@ -300,7 +407,6 @@ def main():
     st.set_page_config(page_title="予約投稿作成フォーム", layout="wide")
     st.title("📝 予約投稿作成フォーム（YouTube×X）")
 
-    # ---- 背景はデフォルトに統一（カスタム背景・枠線は付けない） ----
     st.markdown("<style>div[data-testid='stExpander']{margin-bottom:0.75rem}</style>", unsafe_allow_html=True)
 
     # OAuth コールバック処理
@@ -314,6 +420,7 @@ def main():
     st.session_state.setdefault("tmpl_picker", None)          # 現在編集中テンプレ名
     st.session_state.setdefault("tmpl_editor_name", "")
     st.session_state.setdefault("tmpl_editor_body", "")
+    st.session_state.setdefault("current_template_id", None)  # 「現在のテンプレ」表示用
 
     creds: Optional[Credentials] = st.session_state["google_creds"]
 
@@ -329,7 +436,8 @@ def main():
         st.sidebar.success("✅ Google認証済み")
         if st.sidebar.button("認証をリセットする（このブラウザだけ）"):
             for k in ["google_creds", "videos", "tweet_text",
-                      "templates_loaded", "tmpl_editor_name", "tmpl_editor_body", "tmpl_picker"]:
+                      "templates_loaded", "tmpl_editor_name", "tmpl_editor_body",
+                      "tmpl_picker", "current_template_id"]:
                 st.session_state.pop(k, None)
             st.rerun()
 
@@ -371,7 +479,11 @@ def main():
 
     tmpl_map = {t.name: t.id for t in templates}
     selected_tmpl_label = st.sidebar.selectbox("テンプレ（ツイートの型）を選んでください", list(tmpl_map.keys()))
-    selected_template = next(t for t in templates if t.id == tmpl_map[selected_tmpl_label])
+    sidebar_selected_template = next(t for t in templates if t.id == tmpl_map[selected_tmpl_label])
+
+    # 初期の「現在のテンプレ」IDをサイドバー選択に合わせる（初回のみ）
+    if st.session_state["current_template_id"] is None:
+        st.session_state["current_template_id"] = sidebar_selected_template.id
 
     # メイン：動画情報
     st.subheader("📝 自動生成と編集")
@@ -391,29 +503,36 @@ def main():
         sel_tmpl = next(t for t in templates if t.id == name_map[sel_label])
         st.text_area("プレビュー", value=sel_tmpl.body, height=140, disabled=True)
         if st.button("このテンプレを本文に反映する（自動差し込み）", use_container_width=True, key=f"apply_auto_{sel_tmpl.id}"):
-            snippet = extract_snippet(current_video.description)
+            # ここで「現在のテンプレ」も更新する
+            st.session_state["current_template_id"] = sel_tmpl.id
+            st.session_state["tmpl_picker"] = sel_tmpl.name
+            st.session_state["tmpl_editor_name"] = sel_tmpl.name
+            st.session_state["tmpl_editor_body"] = sel_tmpl.body
+
+            snippet = extract_snippet(current_video.description)  # 既に250unit上限
             tweet = build_tweet_from_template(sel_tmpl.body, current_video, snippet)
             st.session_state["tweet_text"] = tweet
             st.success("テンプレ＋差し込みで本文を作成・反映しました。")
             st.rerun()
 
-    # 現在のテンプレ
+    # 現在のテンプレ（サイドバー選択ではなく、sessionの current_template_id を採用）
+    cur_tmpl = next((t for t in templates if t.id == st.session_state["current_template_id"]), sidebar_selected_template)
     st.markdown("#### 現在のテンプレ")
-    st.write(f"**テンプレ名：** {selected_template.name}")
-    st.code(selected_template.body or "(本文なし)", language=None)
+    st.write(f"**テンプレ名：** {cur_tmpl.name}")
+    st.code(cur_tmpl.body or "(本文なし)", language=None)
 
     # テンプレ編集（呼び出したテンプレ本文を編集）
     with st.expander("🔧 テンプレ編集（選択→内容を編集→保存）"):
         if st.session_state["tmpl_picker"] is None:
-            st.session_state["tmpl_picker"] = selected_template.name
-            st.session_state["tmpl_editor_name"] = selected_template.name
-            st.session_state["tmpl_editor_body"] = selected_template.body
+            st.session_state["tmpl_picker"] = cur_tmpl.name
+            st.session_state["tmpl_editor_name"] = cur_tmpl.name
+            st.session_state["tmpl_editor_body"] = cur_tmpl.body
 
         picker_options = [t.name for t in templates]
         try:
             default_index = picker_options.index(st.session_state["tmpl_picker"])
         except ValueError:
-            default_index = picker_options.index(selected_template.name)
+            default_index = picker_options.index(cur_tmpl.name)
 
         picked = st.selectbox("テンプレを選択", picker_options, index=default_index)
 
@@ -422,6 +541,7 @@ def main():
             t = next(t for t in templates if t.name == picked)
             st.session_state["tmpl_editor_name"] = t.name
             st.session_state["tmpl_editor_body"] = t.body
+            st.session_state["current_template_id"] = t.id  # エディタ切り替え時も「現在のテンプレ」を同期
 
         ed_name = st.text_input("テンプレ名", key="tmpl_editor_name")
         ed_body = st.text_area("テンプレ本文", key="tmpl_editor_body", height=160)
@@ -435,6 +555,7 @@ def main():
                     target.body = ed_body
                     save_templates_to_sheets(creds, templates)
                     st.session_state["tmpl_picker"] = ed_name
+                    st.session_state["current_template_id"] = target.id
                     st.success("テンプレを上書き保存しました。")
                     st.rerun()
                 except StopIteration:
@@ -450,6 +571,7 @@ def main():
                     append_template_to_sheets(creds, new_tmpl)
                     st.session_state["templates"] = templates + [new_tmpl]
                     st.session_state["tmpl_picker"] = new_tmpl.name
+                    st.session_state["current_template_id"] = new_tmpl.id
                     st.success(f"テンプレを新規追加しました（ID={new_id}）。")
                     st.rerun()
                 except Exception as e:
@@ -466,7 +588,9 @@ def main():
                     else:
                         save_templates_to_sheets(creds, remaining)
                         st.session_state["templates"] = remaining
+                        # フォールバック
                         st.session_state["tmpl_picker"] = remaining[0].name
+                        st.session_state["current_template_id"] = remaining[0].id
                         st.success("テンプレを削除しました。")
                         st.rerun()
                 except Exception as e:
@@ -475,7 +599,7 @@ def main():
         # 現在のテンプレでツイートを再生成
         st.markdown("---")
         if st.button("🌀 現在のテンプレを使用して再出力"):
-            snippet = extract_snippet(current_video.description)
+            snippet = extract_snippet(current_video.description)  # 250unit上限
             tweet = build_tweet_from_template(st.session_state["tmpl_editor_body"], current_video, snippet)
             st.session_state["tweet_text"] = tweet
             st.success("現在のテンプレでツイート本文を再生成しました。")
@@ -487,13 +611,13 @@ def main():
             st.markdown("**タイトル**（動画タイトルがそのまま入ります）")
             st.code("{title}", language=None)
 
-            st.markdown("**概要（自動要約）**（概要欄から自動で抜き出した短い説明文が入ります）")
+            st.markdown("**概要（自動要約）**（概要欄から自動で抜き出した短い説明文が入ります。最大250unit）")
             st.code("{snippet}", language=None)
 
-            st.markdown("**動画URL**（YouTubeの動画URLが入ります）")
+            st.markdown("**動画URL**（YouTubeの動画URLが入ります。URLは24unit換算）")
             st.code("{url}", language=None)
 
-            st.markdown("**公開日時**（動画の公開予定日時が入ります。例：2025/01/23 20:00）")
+            st.markdown("**公開日時**（m月d日(曜) 形式で入ります。例：11月12日(水)）")
             st.code("{publish_at}", language=None)
 
     # ===== ツイート本文 =====
