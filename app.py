@@ -404,20 +404,35 @@ def main():
     st.set_page_config(page_title="予約投稿作成フォーム", layout="wide")
     st.title("📝 予約投稿作成フォーム（YouTube×X）")
 
-    # 目立つCSS（テンプレ編集expanderの強調）
+    # ===== CSS（ターゲット用マーカー + 個別色）=====
     st.markdown(
         """
         <style>
-        /* すべてのExpanderを軽く強調（特にテンプレ編集を目立たせる） */
-        div[data-testid="stExpander"] > details {
-            border: 1px solid #f0c36d22;
+        /* マーカー直後のExpanderを個別配色 */
+        .marker-overview + div[data-testid="stExpander"] > details {
+            border: 1px solid #dcdcdc;
             border-radius: 10px;
-            background: #fff8e1aa; /* 薄い黄色 */
+            background: #f5f5f5;            /* 概要欄＝灰色 */
         }
-        div[data-testid="stExpander"] summary {
-            background: #ffe8a1;
+        .marker-overview + div[data-testid="stExpander"] summary {
+            background: #eeeeee;
+            color: #333333;
             border-radius: 10px;
         }
+
+        .marker-template + div[data-testid="stExpander"] > details {
+            border: 1px solid #b7e1c0;
+            border-radius: 10px;
+            background: #e6f4ea;            /* テンプレ編集＝緑系 */
+        }
+        .marker-template + div[data-testid="stExpander"] summary {
+            background: #cdefd8;
+            color: #0b57d0;                  /* 文字は青色 */
+            border-radius: 10px;
+            font-weight: 600;
+        }
+        /* ちょい余白 */
+        div[data-testid="stExpander"] { margin-bottom: 0.75rem; }
         </style>
         """,
         unsafe_allow_html=True,
@@ -477,7 +492,7 @@ def main():
             st.session_state["templates"] = load_templates_from_sheets(creds)
             st.session_state["templates_loaded"] = True
         except Exception as e:
-            st.warning(f"テンプレート読み込みに失敗しました（初期テンプレを使用）：{e}")
+            st.warning(f"テンプレ読み込みに失敗しました（初期テンプレを使用）：{e}")
     templates = st.session_state["templates"]
 
     # ----------------------
@@ -511,7 +526,7 @@ def main():
 
     template_names = {t.name: t.id for t in templates}
     selected_template_label = st.sidebar.selectbox(
-        "テンプレート（ツイートの型）を選んでください",
+        "テンプレ（ツイートの型）を選んでください",
         list(template_names.keys()),
     )
     selected_template = next(t for t in templates if t.id == template_names[selected_template_label])
@@ -524,25 +539,33 @@ def main():
     st.write(f"**公開予定日時：** {format_publish_at(current_video.publish_at_utc)}")
     st.write(f"**動画URL：** {current_video.url}")
 
+    # マーカー：概要欄用（直後のexpanderに灰色適用）
+    st.markdown('<div class="marker-overview"></div>', unsafe_allow_html=True)
     with st.expander("概要欄を確認する"):
         st.text(current_video.description)
 
     # テンプレ呼び出し（統合：押したら差し込みまで自動）
-    with st.popover("📄 テンプレートを呼び出す（一覧から選択）", use_container_width=True):
+    with st.popover("📄 テンプレを呼び出す（一覧から選択）", use_container_width=True):
         name_map = {(f"★ {t.name}" if t.is_default else t.name): t.id for t in templates}
         labels_sorted = sorted(name_map.keys(), key=lambda x: (not x.startswith("★ "), x.lower()))
-        sel_label = st.radio("テンプレートを選んでください", options=labels_sorted, index=0)
+        sel_label = st.radio("テンプレを選んでください", options=labels_sorted, index=0)
         sel_tmpl = next(t for t in templates if t.id == name_map[sel_label])
 
         st.text_area("プレビュー", value=sel_tmpl.body, height=140, disabled=True)
 
-        if st.button("このテンプレを本文に反映する（自動差し込み）", use_container_width=True, key=f"apply_auto_{sel_tmpl.id}"):
-            snippet = extract_snippet(current_video.description)
-            tweet = build_tweet_from_template(sel_tmpl.body, current_video, snippet)
-            st.session_state["current_tweet"] = tweet
-            st.session_state["tweet_text"] = tweet
-            st.success("テンプレ＋差し込みで本文を作成・反映しました。")
-            st.rerun()
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("このテンプレを本文に反映する（自動差し込み）", use_container_width=True, key=f"apply_auto_{sel_tmpl.id}"):
+                snippet = extract_snippet(current_video.description)
+                tweet = build_tweet_from_template(sel_tmpl.body, current_video, snippet)
+                st.session_state["current_tweet"] = tweet
+                st.session_state["tweet_text"] = tweet
+                st.success("テンプレ＋差し込みで本文を作成・反映しました。")
+                st.rerun()
+        with c2:
+            # 明示的に閉じるボタン（押下で再実行→Popoverは閉じた状態から描画されます）
+            if st.button("このウィンドウを閉じる", use_container_width=True, key=f"close_pop_{sel_tmpl.id}"):
+                st.rerun()
 
     # ----------------------
     # ツイート本文（ここに最終確認＆コピーを統合）
@@ -584,11 +607,12 @@ def main():
     )
 
     # ----------------------
-    # テンプレート編集（差し込みキーワード＋保存・削除）
+    # マーカー：テンプレ編集用（直後のexpanderに緑＋青文字適用）
     # ----------------------
-    with st.expander("🔧 テンプレート編集（今選んでいるテンプレを直接編集できます）"):
+    st.markdown('<div class="marker-template"></div>', unsafe_allow_html=True)
+    with st.expander("🔧 テンプレ編集（今選んでいるテンプレを直接編集できます）"):
         tmpl_name = st.text_input(
-            "テンプレート名",
+            "テンプレ名",
             value=selected_template.name,
             key=f"tmpl_name_{selected_template.id}",
             help="テンプレ一覧で表示される名前です。",
@@ -599,7 +623,7 @@ def main():
             st.session_state[tmpl_body_key] = selected_template.body or ""
 
         tmpl_body = st.text_area(
-            "テンプレート本文",
+            "テンプレ本文",
             key=tmpl_body_key,
             height=150,
             help="下の「差し込みキーワード」ボタンを使うと、タイトルやURLなどを自動で入れられます。",
@@ -608,13 +632,13 @@ def main():
         col_def, col_save, col_del = st.columns(3)
         with col_def:
             tmpl_default = st.checkbox(
-                "このテンプレートをデフォルトにする",
+                "このテンプレをデフォルトにする",
                 value=selected_template.is_default,
                 key=f"tmpl_default_{selected_template.id}",
             )
 
         st.markdown("##### 差し込みキーワードを挿入する")
-        st.caption("ボタンを押すと、テンプレート本文の末尾にキーワードが追加されます。")
+        st.caption("ボタンを押すと、テンプレ本文の末尾にキーワードが追加されます。")
 
         def append_placeholder(ph: str):
             cur = st.session_state.get(tmpl_body_key, "")
@@ -646,7 +670,7 @@ def main():
 
         with col_save:
             # 上書き保存
-            if st.button("💾 このテンプレートを保存", key=f"save_tmpl_{selected_template.id}"):
+            if st.button("💾 このテンプレを保存", key=f"save_tmpl_{selected_template.id}"):
                 body_to_save = st.session_state.get(tmpl_body_key, selected_template.body or "")
                 for t in templates:
                     if t.id == selected_template.id:
@@ -660,12 +684,12 @@ def main():
                 st.session_state["templates"] = templates
                 try:
                     save_templates_to_sheets(creds, templates)
-                    st.success("テンプレートをスプレッドシートに保存しました。")
+                    st.success("テンプレをスプレッドシートに保存しました。")
                 except Exception as e:
-                    st.error(f"テンプレートの保存に失敗しました：{e}")
+                    st.error(f"テンプレの保存に失敗しました：{e}")
 
-            # 追記保存
-            if st.button("➕ 新規として追加保存（追記）", key=f"append_tmpl_{selected_template.id}"):
+            # 追記保存（ラベル変更）
+            if st.button("➕ このテンプレを新規追加", key=f"append_tmpl_{selected_template.id}"):
                 body_to_save = st.session_state.get(tmpl_body_key, selected_template.body or "")
                 new_id = next_template_id(templates)
                 new_tmpl = Template(
@@ -677,24 +701,24 @@ def main():
                 try:
                     append_template_to_sheets(creds, new_tmpl)
                     st.session_state["templates"] = templates + [new_tmpl]
-                    st.success(f"テンプレートを新規行（ID={new_id}）として追記しました。")
+                    st.success(f"テンプレを新規行（ID={new_id}）として追記しました。")
                     st.rerun()
                 except Exception as e:
-                    st.error(f"追記保存に失敗しました：{e}")
+                    st.error(f"テンプレの新規追加に失敗しました：{e}")
 
         with col_del:
-            if st.button("🗑 このテンプレートを削除", key=f"del_tmpl_{selected_template.id}"):
+            if st.button("🗑 このテンプレを削除", key=f"del_tmpl_{selected_template.id}"):
                 if len(templates) <= 1:
-                    st.warning("テンプレートは最低1件必要なため、削除できません。")
+                    st.warning("テンプレは最低1件必要なため、削除できません。")
                 else:
                     new_templates = [t for t in templates if t.id != selected_template.id]
                     st.session_state["templates"] = new_templates
                     try:
                         save_templates_to_sheets(creds, new_templates)
-                        st.success("テンプレートを削除しました。")
+                        st.success("テンプレを削除しました。")
                         st.rerun()
                     except Exception as e:
-                        st.error(f"テンプレートの削除に失敗しました：{e}")
+                        st.error(f"テンプレの削除に失敗しました：{e}")
 
 
 if __name__ == "__main__":
