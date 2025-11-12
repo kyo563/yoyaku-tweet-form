@@ -2,6 +2,7 @@ import re
 import unicodedata
 import uuid
 import json
+import html as py_html
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import List, Optional
@@ -294,6 +295,24 @@ def next_template_id(existing: List[Template]) -> str:
     return str(max(nums) + 1) if nums else uuid.uuid4().hex[:8]
 
 # ==============================
+# 補助：テンプレ本文ハイライト（プレビュー）
+# ==============================
+
+PLACEHOLDER_REGEX = re.compile(r"\{(title|snippet|url|publish_at)\}")
+
+def html_escape(s: str) -> str:
+    return py_html.escape(s, quote=False)
+
+def highlight_placeholders(text: str) -> str:
+    """テンプレ本文内の {title}|{snippet}|{url}|{publish_at} を青でハイライトするHTMLを返す"""
+    esc = html_escape(text)
+    # 置換はエスケープ後のテキストに対してプレーンマッチで行う
+    def repl(m):
+        return f'<span style="color:#0b57d0; font-weight:600;">{m.group(0)}</span>'
+    # ただし esc には { が含まれるので、そのまま正規表現でOK
+    return PLACEHOLDER_REGEX.sub(repl, esc).replace("\n", "<br>")
+
+# ==============================
 # アプリ本体
 # ==============================
 
@@ -318,6 +337,18 @@ def main():
             background: #cdefd8; color: #0b57d0; border-radius: 10px; font-weight: 600;
         }
         div[data-testid="stExpander"] { margin-bottom: 0.75rem; }
+        .tmpl-preview-box {
+            border:1px dashed #b7e1c0; background:#f7fffa; padding:10px; border-radius:8px; margin-top:6px;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+            font-size: 0.95rem; line-height:1.6;
+        }
+        .regex-box { border:1px solid #ddd; padding:10px; border-radius:8px; background:#fafafa; }
+        .regex-chip {
+            display:inline-flex; align-items:center; gap:6px; margin:4px 6px 4px 0;
+            padding:6px 10px; border:1px solid #bbb; border-radius:20px; background:#fff; cursor:pointer;
+            font-family: ui-monospace, monospace; font-size:0.9rem;
+        }
+        .regex-desc { color:#333; margin: 2px 0 10px 0; font-size:0.9rem; }
         </style>
         """,
         unsafe_allow_html=True,
@@ -330,7 +361,6 @@ def main():
     st.session_state.setdefault("google_creds", None)
     st.session_state.setdefault("videos", [])
     st.session_state.setdefault("templates", default_templates())
-    st.session_state.setdefault("current_tweet", "")
     st.session_state.setdefault("tweet_text", "")
 
     creds: Optional[Credentials] = st.session_state["google_creds"]
@@ -346,7 +376,7 @@ def main():
     else:
         st.sidebar.success("✅ Google認証済み")
         if st.sidebar.button("認証をリセットする（このブラウザだけ）"):
-            for k in ["google_creds", "videos", "current_tweet", "tweet_text",
+            for k in ["google_creds", "videos", "tweet_text",
                       "templates_loaded", "tmpl_editor_name", "tmpl_editor_body", "tmpl_picker"]:
                 st.session_state.pop(k, None)
             st.rerun()
@@ -415,23 +445,25 @@ def main():
                 snippet = extract_snippet(current_video.description)
                 tweet = build_tweet_from_template(sel_tmpl.body, current_video, snippet)
                 st.session_state["tweet_text"] = tweet
-                st.session_state["current_tweet"] = tweet
                 st.success("テンプレ＋差し込みで本文を作成・反映しました。")
                 st.rerun()
         with c2:
             if st.button("このウィンドウを閉じる", use_container_width=True, key=f"close_pop_{sel_tmpl.id}"):
                 st.rerun()
 
-    # ツイート本文（最終確認＆コピー統合）
+    # ツイート本文（入力エリア）
     tweet_text = st.text_area(
         "✏️ ツイート本文（ここで自由に編集できます。改行もそのまま反映されます）",
         key="tweet_text",
         height=240,
     )
-    st.session_state["current_tweet"] = tweet_text
+    # ここで必ず最新値を取得
+    tweet_text = st.session_state.get("tweet_text", "")
+    st.session_state["tweet_text"] = tweet_text
 
     st.info(f"⏰ この動画の公開予定日時： {format_publish_at(current_video.publish_at_utc)}")
 
+    # 文字数カウント（本文/URL内訳）
     body_units, url_units, url_count = count_units_breakdown(tweet_text)
     total_units = body_units + url_units
     if total_units > 280:
@@ -439,7 +471,8 @@ def main():
     else:
         st.write(f"現在 **{total_units}字（本文{body_units}字 + URL{url_units}字）** ／ 280字")
 
-    # === コピー＆「本文→テンプレ新規追加」：同じ見た目のボタン（f-string非使用）===
+    # === コピー＆「本文→テンプレ新規追加」：同じ見た目のボタン ===
+    # 新規追加は自動命名で保存（UIの重複フィールドは削除）
     html(
         """
         <div style="margin: 0.5rem 0 1rem 0; display:flex; gap:8px; flex-wrap:wrap;">
@@ -479,26 +512,20 @@ def main():
         height=90,
     )
 
-    # 本文→テンプレに「新規追加」ボタン（隠しボタン＋名前入力）
-    st.markdown("#### ➕ この本文をテンプレとして新規追加")
-    ctn1, ctn2 = st.columns([3, 1])
-    default_new_name = f"本文から作成 {datetime.now().strftime('%Y/%m/%d %H:%M')}"
-    new_name = ctn1.text_input("テンプレ名（新規）", value=default_new_name, key="new_tmpl_from_body_name")
-
+    # 隠しボタン（本文→テンプレ新規追加：自動命名）
     hidden_label = "___HIDDEN_APPEND_NEW_TEMPLATE___"
-    with ctn2:
-        if st.button(hidden_label, key="append_new_from_body", help="hidden-trigger-button"):
-            try:
-                new_id = next_template_id(templates)
-                body = st.session_state.get("tweet_text", "")
-                nm = (new_name or "").strip() or default_new_name
-                new_tmpl = Template(id=new_id, name=nm, body=body, is_default=False)
-                append_template_to_sheets(creds, new_tmpl)
-                st.session_state["templates"] = templates + [new_tmpl]
-                st.success(f"本文をテンプレとして新規追加しました（ID={new_id}）。")
-                st.rerun()
-            except Exception as e:
-                st.error(f"新規追加に失敗しました：{e}")
+    if st.button(hidden_label, key="append_new_from_body", help="hidden-trigger-button"):
+        try:
+            new_id = next_template_id(templates)
+            body = st.session_state.get("tweet_text", "")
+            default_new_name = f"本文から作成 {datetime.now().strftime('%Y/%m/%d %H:%M')}"
+            new_tmpl = Template(id=new_id, name=default_new_name, body=body, is_default=False)
+            append_template_to_sheets(creds, new_tmpl)
+            st.session_state["templates"] = templates + [new_tmpl]
+            st.success(f"本文をテンプレとして新規追加しました（ID={new_id}）。")
+            st.rerun()
+        except Exception as e:
+            st.error(f"新規追加に失敗しました：{e}")
 
     # テンプレ編集（緑＋青文字）— 選択→差し替え→保存
     st.markdown('<div class="marker-template"></div>', unsafe_allow_html=True)
@@ -522,6 +549,10 @@ def main():
 
         ed_name = st.text_input("テンプレ名", key="tmpl_editor_name")
         ed_body = st.text_area("テンプレ本文", key="tmpl_editor_body", height=160)
+
+        # ハイライト付きプレビューを表示
+        st.markdown("**テンプレ本文プレビュー（プレースホルダを青で強調）**")
+        st.markdown(f'<div class="tmpl-preview-box">{highlight_placeholders(ed_body)}</div>', unsafe_allow_html=True)
 
         c1, c2, c3 = st.columns(3)
         with c1:
@@ -572,6 +603,33 @@ def main():
                             st.rerun()
                     except Exception as e:
                         st.error(f"削除に失敗しました：{e}")
+
+        st.markdown("---")
+        st.markdown("#### 📎 正規表現スニペット（クリックでコピー）")
+
+        # 用意する正規表現と説明
+        regex_snippets = [
+            (r"\{title\}", "動画タイトルのプレースホルダに一致します。"),
+            (r"\{snippet\}", "概要欄から自動抽出した短文のプレースホルダに一致します。"),
+            (r"\{url\}", "動画URLのプレースホルダに一致します。"),
+            (r"\{publish_at\}", "公開予定日時のプレースホルダに一致します。"),
+            (r"https?://\\S+", "URL全般にマッチします（ツイート本文のURL抽出に利用）。"),
+            (r"#[\\w\\p{Han}\\p{Hiragana}\\p{Katakana}]+", "ハッシュタグにマッチ（和文含む想定、環境によりUnicodeクラス対応差あり）。"),
+        ]
+
+        # コピー用HTML（f-string回避）
+        chips_html = []
+        for patt, desc in regex_snippets:
+            patt_json = json.dumps(patt)
+            chip = f"""
+            <div class="regex-desc">{py_html.escape(desc)}</div>
+            <div class="regex-chip" onclick='navigator.clipboard.writeText({patt_json})' title="クリックでコピー">
+                <span>📋</span><code>{py_html.escape(patt)}</code>
+            </div>
+            """
+            chips_html.append(chip)
+
+        st.markdown(f'<div class="regex-box">{"".join(chips_html)}</div>', unsafe_allow_html=True)
 
 if __name__ == "__main__":
     main()
