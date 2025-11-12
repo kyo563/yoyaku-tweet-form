@@ -300,29 +300,8 @@ def main():
     st.set_page_config(page_title="予約投稿作成フォーム", layout="wide")
     st.title("📝 予約投稿作成フォーム（YouTube×X）")
 
-    # ===== CSS（概要＝灰、テンプレ編集＝緑/青見出しのみ）=====
-    st.markdown(
-        """
-        <style>
-        .marker-overview + div[data-testid="stExpander"] > details {
-            border: 1px solid #dcdcdc; border-radius: 10px; background: #f5f5f5;
-        }
-        .marker-overview + div[data-testid="stExpander"] summary {
-            background: #eeeeee; color: #333; border-radius: 10px;
-        }
-        .marker-template + div[data-testid="stExpander"] > details {
-            border: 1px solid #b7e1c0; border-radius: 10px; background: #e6f4ea;
-        }
-        .marker-template + div[data-testid="stExpander"] summary {
-            background: #cdefd8; color: #0b57d0; border-radius: 10px; font-weight: 600;
-        }
-        div[data-testid="stExpander"] { margin-bottom: 0.75rem; }
-        .muted { color:#555; font-size:0.9rem; }
-        .tmpl-preview { border:1px solid #cfd8dc; background:#f7fbff; padding:12px; border-radius:10px; }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
+    # ---- 背景はデフォルトに統一（カスタム背景・枠線は付けない） ----
+    st.markdown("<style>div[data-testid='stExpander']{margin-bottom:0.75rem}</style>", unsafe_allow_html=True)
 
     # OAuth コールバック処理
     handle_oauth_callback()
@@ -332,6 +311,9 @@ def main():
     st.session_state.setdefault("videos", [])
     st.session_state.setdefault("templates", default_templates())
     st.session_state.setdefault("tweet_text", "")
+    st.session_state.setdefault("tmpl_picker", None)          # 現在編集中テンプレ名
+    st.session_state.setdefault("tmpl_editor_name", "")
+    st.session_state.setdefault("tmpl_editor_body", "")
 
     creds: Optional[Credentials] = st.session_state["google_creds"]
 
@@ -397,8 +379,7 @@ def main():
     st.write(f"**公開予定日時：** {format_publish_at(current_video.publish_at_utc)}")
     st.write(f"**動画URL：** {current_video.url}")
 
-    # 概要欄（灰色）
-    st.markdown('<div class="marker-overview"></div>', unsafe_allow_html=True)
+    # 概要欄（背景スタイルはデフォルト）
     with st.expander("概要欄を確認する"):
         st.text(current_video.description)
 
@@ -416,36 +397,33 @@ def main():
             st.success("テンプレ＋差し込みで本文を作成・反映しました。")
             st.rerun()
 
-    # ===== 新設：現在選択中テンプレの描画（サイドバー選択のテンプレを表示）=====
+    # ===== 現在のテンプレ（背景はデフォルトのまま）=====
     st.markdown("#### 現在のテンプレ")
-    st.markdown(
-        f"""<div class="tmpl-preview">
-<strong>テンプレ名：</strong>{selected_template.name}<br/>
-<strong>本文：</strong>
-</div>""",
-        unsafe_allow_html=True,
-    )
+    st.write(f"**テンプレ名：** {selected_template.name}")
     st.code(selected_template.body or "(本文なし)", language=None)
 
-    # ===== （移動）テンプレ編集 —— ここに移動 =====
-    st.markdown('<div class="marker-template"></div>', unsafe_allow_html=True)
+    # ===== テンプレ編集（“ツイート本文”ではなく『呼び出したテンプレ本文』を編集）=====
     with st.expander("🔧 テンプレ編集（選択→内容を編集→保存）"):
-        st.session_state.setdefault("tmpl_picker", "本文から作成（現在の本文）")
-        st.session_state.setdefault("tmpl_editor_name", f"本文から作成 {datetime.now().strftime('%Y/%m/%d %H:%M')}")
-        st.session_state.setdefault("tmpl_editor_body", st.session_state.get("tweet_text", ""))
+        # デフォルトでサイドバー選択中テンプレをセット
+        if st.session_state["tmpl_picker"] is None:
+            st.session_state["tmpl_picker"] = selected_template.name
+            st.session_state["tmpl_editor_name"] = selected_template.name
+            st.session_state["tmpl_editor_body"] = selected_template.body
 
-        picker_options = ["本文から作成（現在の本文）"] + [t.name for t in templates]
-        picked = st.selectbox("テンプレを選択", picker_options, index=picker_options.index(st.session_state["tmpl_picker"]))
+        picker_options = [t.name for t in templates]
+        # 選択肢：テンプレ一覧（“本文から作成”は外す）
+        try:
+            default_index = picker_options.index(st.session_state["tmpl_picker"])
+        except ValueError:
+            default_index = picker_options.index(selected_template.name)
+
+        picked = st.selectbox("テンプレを選択", picker_options, index=default_index)
 
         if picked != st.session_state["tmpl_picker"]:
             st.session_state["tmpl_picker"] = picked
-            if picked == "本文から作成（現在の本文）":
-                st.session_state["tmpl_editor_name"] = f"本文から作成 {datetime.now().strftime('%Y/%m/%d %H:%M')}"
-                st.session_state["tmpl_editor_body"] = st.session_state.get("tweet_text", "")
-            else:
-                t = next(t for t in templates if t.name == picked)
-                st.session_state["tmpl_editor_name"] = t.name
-                st.session_state["tmpl_editor_body"] = t.body
+            t = next(t for t in templates if t.name == picked)
+            st.session_state["tmpl_editor_name"] = t.name
+            st.session_state["tmpl_editor_body"] = t.body
 
         ed_name = st.text_input("テンプレ名", key="tmpl_editor_name")
         ed_body = st.text_area("テンプレ本文", key="tmpl_editor_body", height=160)
@@ -454,20 +432,19 @@ def main():
         with c1:
             if st.button("💾 このテンプレを保存（上書き）"):
                 try:
-                    if st.session_state["tmpl_picker"] == "本文から作成（現在の本文）":
-                        st.warning("現在は『本文から作成』を選択中です。上書きではなく新規追加をご利用ください。")
-                    else:
-                        target = next(t for t in templates if t.name == st.session_state["tmpl_picker"])
-                        target.name = ed_name
-                        target.body = ed_body
-                        save_templates_to_sheets(creds, templates)
-                        st.session_state["tmpl_picker"] = ed_name
-                        st.success("テンプレを上書き保存しました。")
-                        st.rerun()
+                    target = next(t for t in templates if t.name == st.session_state["tmpl_picker"])
+                    target.name = ed_name
+                    target.body = ed_body
+                    save_templates_to_sheets(creds, templates)
+                    # 選択名の更新反映
+                    st.session_state["tmpl_picker"] = ed_name
+                    st.success("テンプレを上書き保存しました。")
+                    st.rerun()
                 except StopIteration:
                     st.error("対象テンプレが見つかりませんでした。")
                 except Exception as e:
                     st.error(f"保存に失敗しました：{e}")
+
         with c2:
             if st.button("➕ このテンプレを新規追加"):
                 try:
@@ -480,42 +457,53 @@ def main():
                     st.rerun()
                 except Exception as e:
                     st.error(f"新規追加に失敗しました：{e}")
+
         with c3:
             if st.button("🗑 このテンプレを削除"):
-                if st.session_state["tmpl_picker"] == "本文から作成（現在の本文）":
-                    st.warning("『本文から作成』は削除対象ではありません。")
-                else:
-                    try:
-                        remaining = [t for t in templates if t.name != st.session_state["tmpl_picker"]]
-                        if len(remaining) == len(templates):
-                            st.warning("削除対象のテンプレが見つかりません。")
-                        elif not remaining:
-                            st.warning("テンプレは最低1件必要なため、削除できません。")
-                        else:
-                            save_templates_to_sheets(creds, remaining)
-                            st.session_state["templates"] = remaining
-                            st.session_state["tmpl_picker"] = "本文から作成（現在の本文）"
-                            st.success("テンプレを削除しました。")
-                            st.rerun()
-                    except Exception as e:
-                        st.error(f"削除に失敗しました：{e}")
+                try:
+                    remaining = [t for t in templates if t.name != st.session_state["tmpl_picker"]]
+                    if len(remaining) == len(templates):
+                        st.warning("削除対象のテンプレが見つかりません。")
+                    elif not remaining:
+                        st.warning("テンプレは最低1件必要なため、削除できません。")
+                    else:
+                        save_templates_to_sheets(creds, remaining)
+                        st.session_state["templates"] = remaining
+                        # 先頭テンプレにフォールバック
+                        st.session_state["tmpl_picker"] = remaining[0].name
+                        st.success("テンプレを削除しました。")
+                        st.rerun()
+                except Exception as e:
+                    st.error(f"削除に失敗しました：{e}")
 
+        # ▼ 追加：現在のテンプレでツイートを再生成
         st.markdown("---")
-        # 差し込みキーワードの意味（ご指定の形式）
-        st.markdown("###### 差し込みキーワードの意味")
-        st.markdown("**タイトル**（動画タイトルがそのまま入ります）")
-        st.code("{title}", language=None)
+        if st.button("🌀 現在のテンプレを使用して再出力"):
+            snippet = extract_snippet(current_video.description)
+            # 現在エディタに表示中のテンプレ本文で再生成
+            tweet = build_tweet_from_template(st.session_state["tmpl_editor_body"], current_video, snippet)
+            st.session_state["tweet_text"] = tweet
+            st.success("現在のテンプレでツイート本文を再生成しました。")
+            st.rerun()
 
-        st.markdown("**概要（自動要約）**（概要欄から自動で抜き出した短い説明文が入ります）")
-        st.code("{snippet}", language=None)
+        # 差し込みキーワードの意味（説明＋コードブロック）
+# 差し込みキーワードの意味（折りたたみ）
+st.markdown("---")
+with st.expander("差し込みキーワードの意味", expanded=False):
+    st.markdown("**タイトル**（動画タイトルがそのまま入ります）")
+    st.code("{title}", language=None)
 
-        st.markdown("**動画URL**（YouTubeの動画URLが入ります）")
-        st.code("{url}", language=None)
+    st.markdown("**概要（自動要約）**（概要欄から自動で抜き出した短い説明文が入ります）")
+    st.code("{snippet}", language=None)
 
-        st.markdown("**公開日時**（動画の公開予定日時が入ります。例：2025/01/23 20:00）")
-        st.code("{publish_at}", language=None)
+    st.markdown("**動画URL**（YouTubeの動画URLが入ります）")
+    st.code("{url}", language=None)
 
-    # ===== ツイート本文（この位置に維持。カウントは戻り値で常時反映）=====
+    st.markdown("**公開日時**（動画の公開予定日時が入ります。例：2025/01/23 20:00）")
+    st.code("{publish_at}", language=None)
+
+
+    # ===== ツイート本文 =====
     tweet_text = st.text_area(
         "✏️ ツイート本文（ここで自由に編集できます。改行もそのまま反映されます）",
         key="tweet_text",
@@ -524,6 +512,7 @@ def main():
 
     st.info(f"⏰ この動画の公開予定日時： {format_publish_at(current_video.publish_at_utc)}")
 
+    # 文字数カウント
     body_units, url_units, url_count = count_units_breakdown(tweet_text or "")
     total_units = body_units + url_units
     if total_units > 280:
@@ -531,7 +520,7 @@ def main():
     else:
         st.write(f"現在 **{total_units}字（本文{body_units}字 + URL{url_units}字）** ／ 280字")
 
-    # コピーのみ
+    # コピー
     safe_text = (tweet_text or "").replace("\\", "\\\\").replace("'", "\\'").replace("\n", "\\n")
     html(
         f"""
