@@ -1,5 +1,6 @@
 import re
 import unicodedata
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import List, Optional
@@ -255,7 +256,7 @@ def start_google_oauth():
 
 def ensure_valid_creds(creds: Optional[Credentials]) -> Optional[Credentials]:
     """
-    前回仕様を崩さず、API呼び出し直前に必要なときだけ自動リフレッシュ。
+    API呼び出し直前に必要なときだけ自動リフレッシュ。
     """
     if creds and creds.expired and creds.refresh_token:
         try:
@@ -396,7 +397,7 @@ def load_templates_from_sheets(creds: Credentials) -> List[Template]:
 def save_templates_to_sheets(creds: Credentials, templates: List[Template]) -> None:
     """
     Templates シートに現在のテンプレ一覧をまるごと保存します。
-    A2:D を一度クリアしてから書き換えます。
+    A2:D を一度クリアしてから書き換えます。（上書き保存）
     """
     if not SPREADSHEET_ID:
         return
@@ -428,6 +429,48 @@ def save_templates_to_sheets(creds: Credentials, templates: List[Template]) -> N
         valueInputOption="RAW",
         body={"values": values},
     ).execute()
+
+
+# ---- 追記保存：新規行として追加するヘルパー ----
+def append_template_to_sheets(creds: Credentials, template: Template) -> None:
+    """
+    Templates シートの末尾に 1 行追記します（既存行は上書きしません）。
+    """
+    if not SPREADSHEET_ID:
+        return
+    creds = ensure_valid_creds(creds)
+    service = build("sheets", "v4", credentials=creds)
+    sheet = service.spreadsheets()
+
+    values = [[
+        template.id,
+        template.name,
+        template.body,
+        "TRUE" if template.is_default else "FALSE",
+    ]]
+
+    sheet.values().append(
+        spreadsheetId=SPREADSHEET_ID,
+        range="Templates!A:D",
+        valueInputOption="RAW",
+        insertDataOption="INSERT_ROWS",
+        body={"values": values},
+    ).execute()
+
+
+def next_template_id(existing: List[Template]) -> str:
+    """
+    既存IDが数値なら最大+1、混在/非数値なら短いUUIDを採番します。
+    """
+    nums = []
+    for t in existing:
+        try:
+            nums.append(int(t.id))
+        except Exception:
+            pass
+    if nums:
+        return str(max(nums) + 1)
+    return uuid.uuid4().hex[:8]
 
 
 # ==============================
@@ -665,6 +708,7 @@ def main():
         st.code("{publish_at}", language=None)
 
         with col_save:
+            # 上書き保存（既存の全行を再書き込み）
             if st.button("💾 このテンプレートを保存", key=f"save_tmpl_{selected_template.id}"):
                 body_to_save = st.session_state.get(tmpl_body_key, selected_template.body or "")
 
@@ -681,10 +725,29 @@ def main():
 
                 st.session_state["templates"] = templates
                 try:
-                    save_templates_to_sheets(creds, templates)
+                    save_templates_to_sheets(creds, templates)  # 既存の「全体上書き」
                     st.success("テンプレートをスプレッドシートに保存しました。")
                 except Exception as e:
                     st.error(f"テンプレートの保存に失敗しました：{e}")
+
+            # 新規として追加保存（追記）
+            if st.button("➕ 新規として追加保存（追記）", key=f"append_tmpl_{selected_template.id}"):
+                body_to_save = st.session_state.get(tmpl_body_key, selected_template.body or "")
+                new_id = next_template_id(templates)
+                new_tmpl = Template(
+                    id=new_id,
+                    name=tmpl_name,
+                    body=body_to_save,
+                    is_default=tmpl_default,  # 併存し得る点に注意
+                )
+                try:
+                    append_template_to_sheets(creds, new_tmpl)
+                    # ローカル状態にも反映
+                    st.session_state["templates"] = templates + [new_tmpl]
+                    st.success(f"テンプレートを新規行（ID={new_id}）として追記しました。")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"追記保存に失敗しました：{e}")
 
         with col_del:
             if st.button("🗑 このテンプレートを削除", key=f"del_tmpl_{selected_template.id}"):
