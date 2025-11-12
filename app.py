@@ -301,7 +301,7 @@ def main():
     st.set_page_config(page_title="予約投稿作成フォーム", layout="wide")
     st.title("📝 予約投稿作成フォーム（YouTube×X）")
 
-    # ===== CSS：配色（概要＝灰、テンプレ編集＝緑/青）=====
+    # ===== CSS（概要＝灰、テンプレ編集＝緑/青）=====
     st.markdown(
         """
         <style>
@@ -439,38 +439,35 @@ def main():
     else:
         st.write(f"現在 **{total_units}字（本文{body_units}字 + URL{url_units}字）** ／ 280字")
 
-    # コピー（HTMLボタン）
+    # === コピー＆「本文→テンプレ新規追加」：同じ見た目のボタン（f-string非使用）===
     html(
-        f"""
+        """
         <div style="margin: 0.5rem 0 1rem 0; display:flex; gap:8px; flex-wrap:wrap;">
           <button
             style="padding:8px 14px;border-radius:8px;border:1px solid #aaa;cursor:pointer;"
-            onclick='navigator.clipboard.writeText({json.dumps(tweet_text)})'>
+            onclick='navigator.clipboard.writeText(__TEXT__)'>
             クリップボードにコピー
           </button>
 
-          <!-- 新規追加（本文→テンプレ）と同じ見た目のボタン -->
           <button
             style="padding:8px 14px;border-radius:8px;border:1px solid #aaa;cursor:pointer;"
             onclick="
-              (function(){{
+              (function(){
                 const btns = Array.from(window.parent.document.querySelectorAll('button'));
                 const tgt = btns.find(b => (b.innerText || '').trim() === '___HIDDEN_APPEND_NEW_TEMPLATE___');
                 if (tgt) tgt.click();
-              }})();
+              })();
             ">
             ➕ この本文をテンプレとして新規追加
           </button>
 
           <script>
-            // 起動時に隠しボタンを非表示化
             (function(){
-              const hide = () => {{
+              const hide = () => {
                 const btns = Array.from(window.parent.document.querySelectorAll('button'));
                 const tgt = btns.find(b => (b.innerText || '').trim() === '___HIDDEN_APPEND_NEW_TEMPLATE___');
                 if (tgt) tgt.style.display = 'none';
-              }};
-              // 何度か試す（Streamlitの再レンダ対策）
+              };
               hide();
               setTimeout(hide, 300);
               setTimeout(hide, 800);
@@ -478,7 +475,7 @@ def main():
             })();
           </script>
         </div>
-        """,
+        """.replace("__TEXT__", json.dumps(tweet_text)),
         height=90,
     )
 
@@ -488,7 +485,6 @@ def main():
     default_new_name = f"本文から作成 {datetime.now().strftime('%Y/%m/%d %H:%M')}"
     new_name = ctn1.text_input("テンプレ名（新規）", value=default_new_name, key="new_tmpl_from_body_name")
 
-    # 隠しボタン：ラベルはユニークに（JSからクリック）
     hidden_label = "___HIDDEN_APPEND_NEW_TEMPLATE___"
     with ctn2:
         if st.button(hidden_label, key="append_new_from_body", help="hidden-trigger-button"):
