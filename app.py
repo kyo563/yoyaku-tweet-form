@@ -318,6 +318,7 @@ def main():
         }
         div[data-testid="stExpander"] { margin-bottom: 0.75rem; }
         .muted { color:#555; font-size:0.9rem; }
+        .tmpl-preview { border:1px solid #cfd8dc; background:#f7fbff; padding:12px; border-radius:10px; }
         </style>
         """,
         unsafe_allow_html=True,
@@ -415,38 +416,18 @@ def main():
             st.success("テンプレ＋差し込みで本文を作成・反映しました。")
             st.rerun()
 
-    # ツイート本文（戻り値を直接使用し、常に最新でカウント）
-    tweet_text = st.text_area(
-        "✏️ ツイート本文（ここで自由に編集できます。改行もそのまま反映されます）",
-        key="tweet_text",
-        height=240,
+    # ===== 新設：現在選択中テンプレの描画（サイドバー選択のテンプレを表示）=====
+    st.markdown("#### 現在のテンプレ")
+    st.markdown(
+        f"""<div class="tmpl-preview">
+<strong>テンプレ名：</strong>{selected_template.name}<br/>
+<strong>本文：</strong>
+</div>""",
+        unsafe_allow_html=True,
     )
+    st.code(selected_template.body or "(本文なし)", language=None)
 
-    st.info(f"⏰ この動画の公開予定日時： {format_publish_at(current_video.publish_at_utc)}")
-
-    # 文字数カウント（本文/URL内訳）
-    body_units, url_units, url_count = count_units_breakdown(tweet_text or "")
-    total_units = body_units + url_units
-    if total_units > 280:
-        st.error(f"現在 {total_units}字（本文{body_units}字 + URL{url_units}字 / URL本数 {url_count}）－ 280字を超えています。")
-    else:
-        st.write(f"現在 **{total_units}字（本文{body_units}字 + URL{url_units}字）** ／ 280字")
-
-    # コピーのみ
-    html(
-        """
-        <div style="margin: 0.5rem 0 1rem 0;">
-          <button
-            style="padding:8px 14px;border-radius:8px;border:1px solid #aaa;cursor:pointer;"
-            onclick='navigator.clipboard.writeText(__TEXT__)'>
-            クリップボードにコピー
-          </button>
-        </div>
-        """.replace("__TEXT__", (tweet_text or "").replace("\\", "\\\\").replace("'", "\\'").replace("\n", "\\n")),
-        height=60,
-    )
-
-    # テンプレ編集（プレビューなし）
+    # ===== （移動）テンプレ編集 —— ここに移動 =====
     st.markdown('<div class="marker-template"></div>', unsafe_allow_html=True)
     with st.expander("🔧 テンプレ編集（選択→内容を編集→保存）"):
         st.session_state.setdefault("tmpl_picker", "本文から作成（現在の本文）")
@@ -520,7 +501,7 @@ def main():
                         st.error(f"削除に失敗しました：{e}")
 
         st.markdown("---")
-        # ====== ご指定の表記に変更（説明＋コードブロック）======
+        # 差し込みキーワードの意味（ご指定の形式）
         st.markdown("###### 差し込みキーワードの意味")
         st.markdown("**タイトル**（動画タイトルがそのまま入ります）")
         st.code("{title}", language=None)
@@ -533,6 +514,37 @@ def main():
 
         st.markdown("**公開日時**（動画の公開予定日時が入ります。例：2025/01/23 20:00）")
         st.code("{publish_at}", language=None)
+
+    # ===== ツイート本文（この位置に維持。カウントは戻り値で常時反映）=====
+    tweet_text = st.text_area(
+        "✏️ ツイート本文（ここで自由に編集できます。改行もそのまま反映されます）",
+        key="tweet_text",
+        height=240,
+    )
+
+    st.info(f"⏰ この動画の公開予定日時： {format_publish_at(current_video.publish_at_utc)}")
+
+    body_units, url_units, url_count = count_units_breakdown(tweet_text or "")
+    total_units = body_units + url_units
+    if total_units > 280:
+        st.error(f"現在 {total_units}字（本文{body_units}字 + URL{url_units}字 / URL本数 {url_count}）－ 280字を超えています。")
+    else:
+        st.write(f"現在 **{total_units}字（本文{body_units}字 + URL{url_units}字）** ／ 280字")
+
+    # コピーのみ
+    safe_text = (tweet_text or "").replace("\\", "\\\\").replace("'", "\\'").replace("\n", "\\n")
+    html(
+        f"""
+        <div style="margin: 0.5rem 0 1rem 0;">
+          <button
+            style="padding:8px 14px;border-radius:8px;border:1px solid #aaa;cursor:pointer;"
+            onclick='navigator.clipboard.writeText("{safe_text}")'>
+            クリップボードにコピー
+          </button>
+        </div>
+        """,
+        height=60,
+    )
 
 if __name__ == "__main__":
     main()
