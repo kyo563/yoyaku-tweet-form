@@ -144,12 +144,10 @@ def ensure_url_and_limit(text: str, url: str, max_units: int = 280) -> str:
     ・URLより前の部分は、(max_units - URL_UNITS) の範囲でトリミング
     """
     if not url or url not in text:
-        # URLが含まれていない場合は単純カット
         if count_units(text) <= max_units:
             return text
         return truncate_to_limit(text, max_units=max_units)
 
-    # 最後に出てくるURLを対象にする
     idx = text.rfind(url)
     prefix = text[:idx]
 
@@ -288,7 +286,7 @@ def fetch_scheduled_videos(creds: Credentials) -> List[Video]:
 
     uploads_playlist_id = items[0]["contentDetails"]["relatedPlaylists"]["uploads"]
 
-    # 前回仕様を維持しつつ、nextPageTokenだけ追加（件数が多い場合の取りこぼし防止）
+    # nextPageToken 対応で取りこぼし防止
     video_ids: List[str] = []
     page_token = None
     while True:
@@ -550,17 +548,47 @@ def main():
     with st.expander("概要欄を確認する"):
         st.text(current_video.description)
 
-    # テンプレ呼び出し ＋ 自動作成ボタン
+    # ===== テンプレ呼び出し（一覧選択）＋ 自動作成 =====
     col_btn1, col_btn2 = st.columns(2)
+
     with col_btn1:
-        if st.button("📄 テンプレート本文を呼び出す"):
-            base = selected_template.body or ""
-            st.session_state["current_tweet"] = base
-            st.session_state["tweet_text"] = base
-            st.success("選択中のテンプレート本文を、下のツイート欄に呼び出しました。")
+        pop = st.popover("📄 テンプレートを呼び出す（一覧から選択）", use_container_width=True)
+        with pop:
+            # デフォルトには★を付けて視認性アップ
+            name_map = {
+                (f"★ {t.name}" if t.is_default else t.name): t.id
+                for t in templates
+            }
+            # 先頭はデフォルトを優先表示
+            labels_sorted = sorted(name_map.keys(), key=lambda x: (not x.startswith("★ "), x.lower()))
+            sel_label = st.radio(
+                "テンプレートを選んでください",
+                options=labels_sorted,
+                index=0,
+            )
+            sel_tmpl = next(t for t in templates if t.id == name_map[sel_label])
+
+            st.text_area("プレビュー", value=sel_tmpl.body, height=140, disabled=True)
+
+            c1, c2 = st.columns(2)
+            with c1:
+                if st.button("このテンプレを本文に反映する", use_container_width=True, key=f"apply_{sel_tmpl.id}"):
+                    base = sel_tmpl.body or ""
+                    st.session_state["current_tweet"] = base
+                    st.session_state["tweet_text"] = base
+                    st.success("テンプレート本文をツイート欄に反映しました。")
+                    st.rerun()
+            with c2:
+                if st.button("タイトル/URL等を差し込み反映", use_container_width=True, key=f"apply_with_snip_{sel_tmpl.id}"):
+                    snippet = extract_snippet(current_video.description)
+                    tweet = build_tweet_from_template(sel_tmpl.body, current_video, snippet)
+                    st.session_state["current_tweet"] = tweet
+                    st.session_state["tweet_text"] = tweet
+                    st.success("テンプレ＋差し込みで本文を作成・反映しました。")
+                    st.rerun()
 
     with col_btn2:
-        if st.button("🔧 概要欄からツイート文を自動作成"):
+        if st.button("🔧 概要欄からツイート文を自動作成", use_container_width=True):
             snippet = extract_snippet(current_video.description)
             tweet = build_tweet_from_template(selected_template.body, current_video, snippet)
             st.session_state["current_tweet"] = tweet
@@ -702,7 +730,7 @@ def main():
     if tweet_text:
         st.code(tweet_text, language=None)
     else:
-        st.info("「テンプレート本文を呼び出す」か「概要欄から自動作成」を押して、ツイート文を作成してください。")
+        st.info("「テンプレートを呼び出す」か「概要欄から自動作成」を押して、ツイート文を作成してください。")
 
     st.markdown("---")
     st.caption("💡 公開予定の日時を見ながら、X公式の予約投稿フォームで同じ時間に投稿予約を設定してください。")
