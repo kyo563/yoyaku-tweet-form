@@ -121,8 +121,7 @@ def format_publish_at_pretty(dt: datetime, tz_name: str = "Asia/Tokyo") -> str:
     wd = ["月", "火", "水", "木", "金", "土", "日"][local.weekday()]
     return f"{local.month}月{local.day}日({wd})"
 
-# URL/title/publish_at は削らない仕様にしたので、
-# ensure_url_and_limit/prioritize_and_fit は使わず残すだけにしておく
+# URL/title/publish_at は削らない仕様だが、汎用関数として残しておく
 def ensure_url_and_limit(text: str, url: str, max_units: int = 280) -> str:
     if not url or url not in text:
         return text if count_units(text) <= max_units else truncate_to_limit(text, max_units=max_units)
@@ -225,57 +224,149 @@ def ensure_valid_creds(creds: Optional[Credentials]) -> Optional[Credentials]:
 # ==============================
 
 def fetch_scheduled_videos(creds: Credentials) -> List[Video]:
+    """
+    予約投稿の通常動画/ショート + 配信開始前のライブ(upcoming) をまとめて取得する。
+
+    - 予約投稿動画:
+        status.publishAt があり、
+        privacyStatus == "private" かつ publishAt が現在より未来のもの
+    - 予約ライブ:
+        liveBroadcasts().list で broadcastStatus="upcoming" を取得し、
+        snippet.scheduledStartTime が現在より未来のもの
+    """
     creds = ensure_valid_creds(creds)
     youtube = build("youtube", "v3", credentials=creds)
     now = datetime.now(timezone.utc)
 
-    channels_resp = youtube.channels().list(part="contentDetails", mine=True).execute()
-    items = channels_resp.get("items", [])
-    if not items:
-        return []
-    uploads_playlist_id = items[0]["contentDetails"]["relatedPlaylists"]["uploads"]
+    videos_uploads: List[Video] = []
+    videos_lives: List[Video] = []
 
-    video_ids: List[str] = []
+    # ==============================
+    # 1) 予約投稿動画（通常動画/ショート）
+    # ==============================
+    channels_resp = youtube.channels().list(
+        part="contentDetails",
+        mine=True,
+    ).execute()
+    items = channels_resp.get("items", [])
+    if items:
+        uploads_playlist_id = items[0]["contentDetails"]["relatedPlaylists"]["uploads"]
+
+        video_ids: List[str] = []
+        page_token = None
+        while True:
+            pl = youtube.playlistItems().list(
+                part="contentDetails",
+                playlistId=uploads_playlist_id,
+                maxResults=50,
+                pageToken=page_token,
+            ).execute()
+            video_ids += [
+                it["contentDetails"]["videoId"]
+                for it in pl.get("items", [])
+            ]
+            page_token = pl.get("nextPageToken")
+            if not page_token:
+                break
+
+        if video_ids:
+            for i in range(0, len(video_ids), 50):
+                resp = youtube.videos().list(
+                    part="snippet,status",
+                    id=",".join(video_ids[i:i + 50]),
+                ).execute()
+                for item in resp.get("items", []):
+                    status = item.get("status", {})
+                    snip = item.get("snippet", {})
+
+                    publish_at_str = status.get("publishAt")
+                    if not publish_at_str:
+                        # 通常の即時公開・ライブVODなどはスキップ
+                        continue
+                    try:
+                        publish_dt = datetime.fromisoformat(
+                            publish_at_str.replace("Z", "+00:00")
+                        )
+                    except ValueError:
+                        continue
+
+                    # 「公開日時指定の予約投稿」だけを拾う
+                    if status.get("privacyStatus") != "private":
+                        continue
+                    if publish_dt <= now:
+                        continue
+
+                    videos_uploads.append(
+                        Video(
+                            video_id=item["id"],
+                            title=snip.get("title", ""),
+                            description=snip.get("description", ""),
+                            publish_at_utc=publish_dt,
+                        )
+                    )
+
+    # ==============================
+    # 2) 配信開始前のライブ（upcoming）
+    # ==============================
     page_token = None
     while True:
-        pl = youtube.playlistItems().list(
-            part="contentDetails",
-            playlistId=uploads_playlist_id,
+        resp = youtube.liveBroadcasts().list(
+            part="snippet,status",
+            broadcastStatus="upcoming",
+            broadcastType="all",
+            mine=True,
             maxResults=50,
             pageToken=page_token,
         ).execute()
-        video_ids += [it["contentDetails"]["videoId"] for it in pl.get("items", [])]
-        page_token = pl.get("nextPageToken")
-        if not page_token:
-            break
-    if not video_ids:
-        return []
 
-    videos: List[Video] = []
-    for i in range(0, len(video_ids), 50):
-        resp = youtube.videos().list(
-            part="snippet,status",
-            id=",".join(video_ids[i:i+50])
-        ).execute()
         for item in resp.get("items", []):
-            status, snip = item.get("status", {}), item.get("snippet", {})
-            publish_at_str = status.get("publishAt")
-            if not publish_at_str:
+            status = item.get("status", {})
+            snip = item.get("snippet", {})
+
+            # ライブの開始予定時刻
+            sched_str = snip.get("scheduledStartTime")
+            if not sched_str:
                 continue
             try:
-                publish_dt = datetime.fromisoformat(publish_at_str.replace("Z", "+00:00"))
+                sched_dt = datetime.fromisoformat(
+                    sched_str.replace("Z", "+00:00")
+                )
             except ValueError:
                 continue
-            if status.get("privacyStatus") != "private":
+
+            if sched_dt <= now:
+                # 直前に過ぎたものなどは除外
                 continue
-            if publish_dt <= now:
+
+            # URL公開済みだけに絞りたい場合は以下のように privacyStatus を見る選択肢もある
+            # if status.get("privacyStatus") not in ("public", "unlisted"):
+            #     continue
+
+            video_id = item.get("id")
+            if not video_id:
                 continue
-            videos.append(Video(
-                video_id=item["id"],
-                title=snip.get("title", ""),
-                description=snip.get("description", ""),
-                publish_at_utc=publish_dt,
-            ))
+
+            videos_lives.append(
+                Video(
+                    video_id=video_id,
+                    title=snip.get("title", ""),
+                    description=snip.get("description", ""),
+                    publish_at_utc=sched_dt,
+                )
+            )
+
+        page_token = resp.get("nextPageToken")
+        if not page_token:
+            break
+
+    # ==============================
+    # 3) マージ & ソート
+    # ==============================
+    videos_by_id: dict[str, Video] = {}
+    for v in videos_uploads + videos_lives:
+        videos_by_id[v.video_id] = v  # ID が同じなら後勝ちで上書き
+
+    videos: List[Video] = list(videos_by_id.values())
     videos.sort(key=lambda v: v.publish_at_utc)
     return videos
 
@@ -447,7 +538,7 @@ def main():
                 if st.session_state["videos"]:
                     st.success(f"{len(st.session_state['videos'])} 件の予約動画を取得しました。")
                 else:
-                    st.warning("予約投稿中の動画が見つかりませんでした。")
+                    st.warning("予約投稿中／配信予定の動画が見つかりませんでした。")
             except Exception as e:
                 st.error(f"予約動画の取得に失敗しました：{e}")
 
@@ -652,6 +743,8 @@ def main():
         key="tweet_text",
         height=240,
     )
+    # 注意書き
+    st.caption("CTRL+Enterで文字数カウント")
 
     st.info(f"⏰ この動画の公開予定日時： {format_publish_at(current_video.publish_at_utc)}")
 
