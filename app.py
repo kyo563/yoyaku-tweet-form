@@ -40,6 +40,7 @@ class Video:
     title: str
     description: str
     publish_at_utc: datetime
+
     @property
     def url(self) -> str:
         return f"https://www.youtube.com/watch?v={self.video_id}"
@@ -156,25 +157,21 @@ def prioritize_and_fit(
 
     # 1) publish_at 除去（出現箇所すべて）
     if publish_text and publish_text in text:
-        # 前後の余分な空白/改行も極力除去
         pattern = r"[ \t]*" + re.escape(publish_text) + r"[ \t]*"
         text = re.sub(pattern, "", text)
-        # 連続改行を1つに
         text = re.sub(r"\n{3,}", "\n\n", text).strip()
         if units(text) <= max_units:
             return text
 
     # 2) snippet 短縮
     if snippet_text and snippet_text in text:
-        # 現在のスニペットユニット数
         current_snip_units = count_units(snippet_text)
-        # 残りを計算： snippet に割り当てられる上限
         over = units(text) - max_units
         target_snip_units = max(0, current_snip_units - over)
         if target_snip_units < current_snip_units:
             new_snip = truncate_to_limit(snippet_text, max_units=target_snip_units)
             text = text.replace(snippet_text, new_snip)
-            snippet_text = new_snip  # 後段の計算でも使う
+            snippet_text = new_snip
             if units(text) <= max_units:
                 return text
 
@@ -198,11 +195,9 @@ def build_tweet_from_template(template_body: str, video: Video, snippet: str, ma
     """
     テンプレに差し込み後、優先度ルールで280unit以内に収める。
     """
-    # 日付は m月d日(曜) 形式へ
     publish_at_pretty = format_publish_at_pretty(video.publish_at_utc)
     url = video.url
     title = video.title
-    # snippetはextract時点で最大250unitに制限済み
 
     raw = template_body.format(
         title=title,
@@ -210,7 +205,6 @@ def build_tweet_from_template(template_body: str, video: Video, snippet: str, ma
         snippet=snippet,
         publish_at=publish_at_pretty,
     )
-    # 優先度ルールで調整
     tweet = prioritize_and_fit(
         raw=raw,
         url_text=url,
@@ -260,7 +254,11 @@ def handle_oauth_callback():
 
 def start_google_oauth():
     flow = create_flow()
-    auth_url, _ = flow.authorization_url(access_type="offline", include_granted_scopes="true", prompt="consent")
+    auth_url, _ = flow.authorization_url(
+        access_type="offline",
+        include_granted_scopes="true",
+        prompt="consent",
+    )
     st.markdown(f"[Googleアカウントで連携する]({auth_url})")
 
 def ensure_valid_creds(creds: Optional[Credentials]) -> Optional[Credentials]:
@@ -305,7 +303,10 @@ def fetch_scheduled_videos(creds: Credentials) -> List[Video]:
 
     videos: List[Video] = []
     for i in range(0, len(video_ids), 50):
-        resp = youtube.videos().list(part="snippet,status", id=",".join(video_ids[i:i+50])).execute()
+        resp = youtube.videos().list(
+            part="snippet,status",
+            id=",".join(video_ids[i:i+50])
+        ).execute()
         for item in resp.get("items", []):
             status, snip = item.get("status", {}), item.get("snippet", {})
             publish_at_str = status.get("publishAt")
@@ -334,8 +335,18 @@ def fetch_scheduled_videos(creds: Credentials) -> List[Video]:
 
 def default_templates() -> List[Template]:
     return [
-        Template(id="1", name="シンプルなお知らせ", body="【新着】{title}\n\n{snippet}\n\n▼動画はこちら\n{url}", is_default=True),
-        Template(id="2", name="丁寧めなお知らせ", body="本日 {publish_at} に動画を公開予定です。\n\n{snippet}\n\n{url}", is_default=False),
+        Template(
+            id="1",
+            name="シンプルなお知らせ",
+            body="【新着】{title}\n\n{snippet}\n\n▼動画はこちら\n{url}",
+            is_default=True
+        ),
+        Template(
+            id="2",
+            name="丁寧めなお知らせ",
+            body="本日 {publish_at} に動画を公開予定です。\n\n{snippet}\n\n{url}",
+            is_default=False
+        ),
     ]
 
 def load_templates_from_sheets(creds: Credentials) -> List[Template]:
@@ -367,7 +378,8 @@ def save_templates_to_sheets(creds: Credentials, templates: List[Template]) -> N
     service = build("sheets", "v4", credentials=creds)
     values = [[t.id, t.name, t.body, "TRUE" if t.is_default else "FALSE"] for t in templates]
     service.spreadsheets().values().clear(
-        spreadsheetId=SPREADSHEET_ID, range="Templates!A2:D"
+        spreadsheetId=SPREADSHEET_ID,
+        range="Templates!A2:D",
     ).execute()
     if values:
         service.spreadsheets().values().update(
@@ -387,7 +399,12 @@ def append_template_to_sheets(creds: Credentials, template: Template) -> None:
         range="Templates!A:D",
         valueInputOption="RAW",
         insertDataOption="INSERT_ROWS",
-        body={"values": [[template.id, template.name, template.body, "TRUE" if template.is_default else "FALSE"]]},
+        body={"values": [[
+            template.id,
+            template.name,
+            template.body,
+            "TRUE" if template.is_default else "FALSE"
+        ]]},
     ).execute()
 
 def next_template_id(existing: List[Template]) -> str:
@@ -407,7 +424,10 @@ def main():
     st.set_page_config(page_title="予約投稿作成フォーム", layout="wide")
     st.title("📝 予約投稿作成フォーム（YouTube×X）")
 
-    st.markdown("<style>div[data-testid='stExpander']{margin-bottom:0.75rem}</style>", unsafe_allow_html=True)
+    st.markdown(
+        "<style>div[data-testid='stExpander']{margin-bottom:0.75rem}</style>",
+        unsafe_allow_html=True,
+    )
 
     # OAuth コールバック処理
     handle_oauth_callback()
@@ -424,26 +444,33 @@ def main():
 
     creds: Optional[Credentials] = st.session_state["google_creds"]
 
-    # 認証UI
-    st.sidebar.header("① Googleアカウント連携")
-    if creds is None:
-        st.sidebar.write("まずは Google アカウントで認証を行います。")
-        st.sidebar.caption("※Google公式の安全な認証画面が別タブで開きます。")
-        if st.sidebar.button("Google連携を開始する"):
-            start_google_oauth()
-            st.stop()
-    else:
-        st.sidebar.success("✅ Google認証済み")
-        if st.sidebar.button("認証をリセットする（このブラウザだけ）"):
-            for k in ["google_creds", "videos", "tweet_text",
-                      "templates_loaded", "tmpl_editor_name", "tmpl_editor_body",
-                      "tmpl_picker", "current_template_id"]:
-                st.session_state.pop(k, None)
-            st.rerun()
+    # ① Googleアカウント連携（メイン画面で実施）
+    st.subheader("① Googleアカウント連携")
 
     if creds is None:
-        st.info("左のサイドバーから Google アカウント連携を行ってください。")
-        return
+        st.write("まずは Google アカウントとの連携を行ってください。")
+        st.caption("※Googleの認証画面が別タブで開きます。認証後、この画面に戻ってきてください。")
+        start_google_oauth()
+        # 認証前はここで終了
+        st.stop()
+    else:
+        cols_auth = st.columns([3, 1])
+        with cols_auth[0]:
+            st.success("✅ Google認証済みです。")
+        with cols_auth[1]:
+            if st.button("認証をリセット（このブラウザのみ）"):
+                for k in [
+                    "google_creds",
+                    "videos",
+                    "tweet_text",
+                    "templates_loaded",
+                    "tmpl_editor_name",
+                    "tmpl_editor_body",
+                    "tmpl_picker",
+                    "current_template_id",
+                ]:
+                    st.session_state.pop(k, None)
+                st.rerun()
 
     # テンプレ読み込み（初回）
     if "templates_loaded" not in st.session_state:
@@ -454,39 +481,61 @@ def main():
         st.session_state["templates_loaded"] = True
     templates: List[Template] = st.session_state["templates"]
 
-    # 予約動画取得
-    st.sidebar.header("② YouTube予約動画の取得")
-    if st.sidebar.button("自分のチャンネルの予約動画リストを取得／更新"):
-        try:
-            st.session_state["videos"] = fetch_scheduled_videos(creds)
-            if st.session_state["videos"]:
-                st.sidebar.success(f"{len(st.session_state['videos'])} 件の予約動画を取得しました。")
-            else:
-                st.sidebar.warning("予約投稿中の動画が見つかりませんでした。")
-        except Exception as e:
-            st.sidebar.error(f"予約動画の取得に失敗しました：{e}")
+    # ② 予約動画の取得と対象動画・テンプレ選択（メイン上部）
+    st.subheader("② 対象動画とテンプレートの選択")
+
+    c1, c2 = st.columns([1, 1])
+
+    with c1:
+        if st.button("自分のチャンネルの予約動画リストを取得／更新"):
+            try:
+                st.session_state["videos"] = fetch_scheduled_videos(creds)
+                if st.session_state["videos"]:
+                    st.success(f"{len(st.session_state['videos'])} 件の予約動画を取得しました。")
+                else:
+                    st.warning("予約投稿中の動画が見つかりませんでした。")
+            except Exception as e:
+                st.error(f"予約動画の取得に失敗しました：{e}")
 
     videos: List[Video] = st.session_state["videos"]
+
     if not videos:
-        st.info("左のサイドバーで「予約動画リストを取得／更新」を実行してください。")
+        st.info("「自分のチャンネルの予約動画リストを取得／更新」ボタンで予約動画リストを取得してください。")
         return
 
-    # 対象動画 & テンプレ選択（サイドバー）
-    st.sidebar.header("③ 対象動画とテンプレの選択")
-    video_options = {f"{v.title} / {format_publish_at(v.publish_at_utc)}": v.video_id for v in videos}
-    selected_label = st.sidebar.selectbox("予約動画を選んでください", list(video_options.keys()))
-    current_video = next(v for v in videos if v.video_id == video_options[selected_label])
+    with c1:
+        video_options = {
+            f"{v.title} / {format_publish_at(v.publish_at_utc)}": v.video_id
+            for v in videos
+        }
+        selected_label = st.selectbox(
+            "予約動画を選んでください",
+            list(video_options.keys()),
+        )
+        current_video = next(
+            v for v in videos if v.video_id == video_options[selected_label]
+        )
 
-    tmpl_map = {t.name: t.id for t in templates}
-    selected_tmpl_label = st.sidebar.selectbox("テンプレ（ツイートの型）を選んでください", list(tmpl_map.keys()))
-    sidebar_selected_template = next(t for t in templates if t.id == tmpl_map[selected_tmpl_label])
+    with c2:
+        tmpl_map = {t.name: t.id for t in templates}
+        selected_tmpl_label = st.selectbox(
+            "テンプレ（ツイートの型）を選んでください",
+            list(tmpl_map.keys()),
+        )
+        selected_template = next(
+            t for t in templates if t.id == tmpl_map[selected_tmpl_label]
+        )
 
-    # 初期の「現在のテンプレ」IDをサイドバー選択に合わせる（初回のみ）
+    # 初期の「現在のテンプレ」IDを選択に合わせる（初回のみ）
     if st.session_state["current_template_id"] is None:
-        st.session_state["current_template_id"] = sidebar_selected_template.id
+        st.session_state["current_template_id"] = selected_template.id
 
-    # メイン：動画情報
-    st.subheader("📝 自動生成と編集")
+    # ==============================
+    # メイン：動画情報 & テンプレ編集
+    # ==============================
+
+    st.subheader("③ 自動生成と編集")
+
     st.write(f"**動画タイトル：** {current_video.title}")
     st.write(f"**公開予定日時：** {format_publish_at(current_video.publish_at_utc)}")
     st.write(f"**動画URL：** {current_video.url}")
@@ -497,13 +546,26 @@ def main():
 
     # テンプレ呼び出し（適用のみ）
     with st.popover("📄 テンプレを呼び出す（一覧から選択）", use_container_width=True):
-        name_map = {(f"★ {t.name}" if t.is_default else t.name): t.id for t in templates}
-        labels_sorted = sorted(name_map.keys(), key=lambda x: (not x.startswith("★ "), x.lower()))
-        sel_label = st.radio("テンプレを選んでください", options=labels_sorted, index=0)
+        name_map = {
+            (f"★ {t.name}" if t.is_default else t.name): t.id
+            for t in templates
+        }
+        labels_sorted = sorted(
+            name_map.keys(),
+            key=lambda x: (not x.startswith("★ "), x.lower()),
+        )
+        sel_label = st.radio(
+            "テンプレを選んでください",
+            options=labels_sorted,
+            index=0,
+        )
         sel_tmpl = next(t for t in templates if t.id == name_map[sel_label])
         st.text_area("プレビュー", value=sel_tmpl.body, height=140, disabled=True)
-        if st.button("このテンプレを本文に反映する（自動差し込み）", use_container_width=True, key=f"apply_auto_{sel_tmpl.id}"):
-            # ここで「現在のテンプレ」も更新する
+        if st.button(
+            "このテンプレを本文に反映する（自動差し込み）",
+            use_container_width=True,
+            key=f"apply_auto_{sel_tmpl.id}",
+        ):
             st.session_state["current_template_id"] = sel_tmpl.id
             st.session_state["tmpl_picker"] = sel_tmpl.name
             st.session_state["tmpl_editor_name"] = sel_tmpl.name
@@ -515,8 +577,11 @@ def main():
             st.success("テンプレ＋差し込みで本文を作成・反映しました。")
             st.rerun()
 
-    # 現在のテンプレ（サイドバー選択ではなく、sessionの current_template_id を採用）
-    cur_tmpl = next((t for t in templates if t.id == st.session_state["current_template_id"]), sidebar_selected_template)
+    # 現在のテンプレ（current_template_id を優先）
+    cur_tmpl = next(
+        (t for t in templates if t.id == st.session_state["current_template_id"]),
+        selected_template,
+    )
     st.markdown("#### 現在のテンプレ")
     st.write(f"**テンプレ名：** {cur_tmpl.name}")
     st.code(cur_tmpl.body or "(本文なし)", language=None)
@@ -534,23 +599,30 @@ def main():
         except ValueError:
             default_index = picker_options.index(cur_tmpl.name)
 
-        picked = st.selectbox("テンプレを選択", picker_options, index=default_index)
+        picked = st.selectbox(
+            "テンプレを選択",
+            picker_options,
+            index=default_index,
+        )
 
         if picked != st.session_state["tmpl_picker"]:
             st.session_state["tmpl_picker"] = picked
             t = next(t for t in templates if t.name == picked)
             st.session_state["tmpl_editor_name"] = t.name
             st.session_state["tmpl_editor_body"] = t.body
-            st.session_state["current_template_id"] = t.id  # エディタ切り替え時も「現在のテンプレ」を同期
+            st.session_state["current_template_id"] = t.id
 
         ed_name = st.text_input("テンプレ名", key="tmpl_editor_name")
         ed_body = st.text_area("テンプレ本文", key="tmpl_editor_body", height=160)
 
-        c1, c2, c3 = st.columns(3)
-        with c1:
+        c1_btn, c2_btn, c3_btn = st.columns(3)
+        with c1_btn:
             if st.button("💾 このテンプレを保存（上書き）"):
                 try:
-                    target = next(t for t in templates if t.name == st.session_state["tmpl_picker"])
+                    target = next(
+                        t for t in templates
+                        if t.name == st.session_state["tmpl_picker"]
+                    )
                     target.name = ed_name
                     target.body = ed_body
                     save_templates_to_sheets(creds, templates)
@@ -563,11 +635,16 @@ def main():
                 except Exception as e:
                     st.error(f"保存に失敗しました：{e}")
 
-        with c2:
+        with c2_btn:
             if st.button("➕ このテンプレを新規追加"):
                 try:
                     new_id = next_template_id(templates)
-                    new_tmpl = Template(id=new_id, name=(ed_name or f"新規テンプレ {new_id}").strip(), body=ed_body, is_default=False)
+                    new_tmpl = Template(
+                        id=new_id,
+                        name=(ed_name or f"新規テンプレ {new_id}").strip(),
+                        body=ed_body,
+                        is_default=False,
+                    )
                     append_template_to_sheets(creds, new_tmpl)
                     st.session_state["templates"] = templates + [new_tmpl]
                     st.session_state["tmpl_picker"] = new_tmpl.name
@@ -577,10 +654,13 @@ def main():
                 except Exception as e:
                     st.error(f"新規追加に失敗しました：{e}")
 
-        with c3:
+        with c3_btn:
             if st.button("🗑 このテンプレを削除"):
                 try:
-                    remaining = [t for t in templates if t.name != st.session_state["tmpl_picker"]]
+                    remaining = [
+                        t for t in templates
+                        if t.name != st.session_state["tmpl_picker"]
+                    ]
                     if len(remaining) == len(templates):
                         st.warning("削除対象のテンプレが見つかりません。")
                     elif not remaining:
@@ -588,7 +668,6 @@ def main():
                     else:
                         save_templates_to_sheets(creds, remaining)
                         st.session_state["templates"] = remaining
-                        # フォールバック
                         st.session_state["tmpl_picker"] = remaining[0].name
                         st.session_state["current_template_id"] = remaining[0].id
                         st.success("テンプレを削除しました。")
@@ -600,7 +679,11 @@ def main():
         st.markdown("---")
         if st.button("🌀 現在のテンプレを使用して再出力"):
             snippet = extract_snippet(current_video.description)  # 250unit上限
-            tweet = build_tweet_from_template(st.session_state["tmpl_editor_body"], current_video, snippet)
+            tweet = build_tweet_from_template(
+                st.session_state["tmpl_editor_body"],
+                current_video,
+                snippet,
+            )
             st.session_state["tweet_text"] = tweet
             st.success("現在のテンプレでツイート本文を再生成しました。")
             st.rerun()
@@ -633,13 +716,22 @@ def main():
     body_units, url_units, url_count = count_units_breakdown(tweet_text or "")
     total_units = body_units + url_units
     if total_units > 280:
-        st.error(f"現在 {total_units}字（本文{body_units}字 + URL{url_units}字 / URL本数 {url_count}）－ 280字を超えています。")
+        st.error(
+            f"現在 {total_units}字（本文{body_units}字 + URL{url_units}字 / URL本数 {url_count}）－ 280字を超えています。"
+        )
     else:
-        st.write(f"現在 **{total_units}字（本文{body_units}字 + URL{url_units}字）** ／ 280字")
+        st.write(
+            f"現在 **{total_units}字（本文{body_units}字 + URL{url_units}字）** ／ 280字"
+        )
 
     # コピー
     safe_text = (tweet_text or "")
-    safe_text = safe_text.replace("\\", "\\\\").replace('"', '\\"').replace("'", "\\'").replace("\n", "\\n")
+    safe_text = (
+        safe_text.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("'", "\\'")
+        .replace("\n", "\\n")
+    )
     html(
         f"""
         <div style="margin: 0.5rem 0 1rem 0;">
