@@ -57,6 +57,10 @@ def count_units(text: str) -> int:
     return total
 
 def truncate_to_limit(text: str, max_units: int = 280) -> str:
+    """
+    汎用トリム関数。デフォルトはツイート上限の 280unit。
+    snippet 用など、別上限をかけたい場合は引数で上書きする。
+    """
     result_chars, length = [], 0
     for ch in text:
         add = 2 if unicodedata.east_asian_width(ch) in ("F", "W", "A") else 1
@@ -82,9 +86,10 @@ def count_units_breakdown(text: str) -> tuple[int, int, int]:
     body_units += count_units(text[pos:])
     return body_units, URL_UNITS * url_count, url_count
 
-def extract_snippet(description: str, max_units: int = 250) -> str:
+def extract_snippet(description: str, max_units: int = 200) -> str:
     """
-    概要欄からURL/見出し行を除いた短文を生成。最大max_units=250に制限。
+    概要欄からURL/見出し行を除いた短文を生成。
+    ツイート本文中で「概要欄由来として使ってよい予算」は 200unit までとする。
     """
     lines = description.splitlines()
     cleaned = []
@@ -93,6 +98,7 @@ def extract_snippet(description: str, max_units: int = 250) -> str:
         if not s or s.startswith("#") or re.search(r"https?://", s):
             continue
         cleaned.append(s)
+    # ここだけ 200unit 上限を適用（デフォルト280から切り替え）
     return truncate_to_limit(" ".join(cleaned), max_units=max_units)
 
 def format_publish_at(dt: datetime, tz_name: str = "Asia/Tokyo") -> str:
@@ -115,10 +121,9 @@ def format_publish_at_pretty(dt: datetime, tz_name: str = "Asia/Tokyo") -> str:
     wd = ["月", "火", "水", "木", "金", "土", "日"][local.weekday()]
     return f"{local.month}月{local.day}日({wd})"
 
+# URL/title/publish_at は削らない仕様にしたので、
+# ensure_url_and_limit/prioritize_and_fit は使わず残すだけにしておく
 def ensure_url_and_limit(text: str, url: str, max_units: int = 280) -> str:
-    """
-    URLは常に保持しつつ280以内に収める最終ガード。
-    """
     if not url or url not in text:
         return text if count_units(text) <= max_units else truncate_to_limit(text, max_units=max_units)
     idx = text.rfind(url)
@@ -138,62 +143,15 @@ def prioritize_and_fit(
     publish_text: str,
     max_units: int = 280,
 ) -> str:
-    """
-    優先度 {url}>{title}>{snippet}>{publish_at} で280以内に調整。
-    - まず publish_at を全文から除去（必要時）
-    - 次に snippet を縮める（0まで許容、初期上限は250）
-    - 次に title を縮める（最小は0）
-    - 最後に ensure_url_and_limit でURL以外を切り詰め
-    """
-    def units(s: str) -> int:
-        bu, uu, _ = count_units_breakdown(s)
-        return bu + uu
-
-    text = raw
-
-    # すでにOKなら即返す
-    if units(text) <= max_units:
-        return text
-
-    # 1) publish_at 除去（出現箇所すべて）
-    if publish_text and publish_text in text:
-        pattern = r"[ \t]*" + re.escape(publish_text) + r"[ \t]*"
-        text = re.sub(pattern, "", text)
-        text = re.sub(r"\n{3,}", "\n\n", text).strip()
-        if units(text) <= max_units:
-            return text
-
-    # 2) snippet 短縮
-    if snippet_text and snippet_text in text:
-        current_snip_units = count_units(snippet_text)
-        over = units(text) - max_units
-        target_snip_units = max(0, current_snip_units - over)
-        if target_snip_units < current_snip_units:
-            new_snip = truncate_to_limit(snippet_text, max_units=target_snip_units)
-            text = text.replace(snippet_text, new_snip)
-            snippet_text = new_snip
-            if units(text) <= max_units:
-                return text
-
-    # 3) title 短縮
-    if title_text and title_text in text:
-        current_title_units = count_units(title_text)
-        over = units(text) - max_units
-        target_title_units = max(0, current_title_units - over)
-        if target_title_units < current_title_units:
-            new_title = truncate_to_limit(title_text, max_units=target_title_units)
-            text = text.replace(title_text, new_title)
-            title_text = new_title
-            if units(text) <= max_units:
-                return text
-
-    # 4) 最後の砦
-    text = ensure_url_and_limit(text, url_text, max_units=max_units)
-    return text
+    # 現行仕様では使わない（URL/title/publish_atを優先的に削るロジックを封印）
+    return raw
 
 def build_tweet_from_template(template_body: str, video: Video, snippet: str, max_units: int = 280) -> str:
     """
-    テンプレに差し込み後、優先度ルールで280unit以内に収める。
+    テンプレに差し込み後、そのまま返す。
+    {url} / {title} / {publish_at} は常に全文を挿入し、
+    {snippet} は extract_snippet 側で 200unit 以内に調整済みとする。
+    280unit を超えてもここでは削らない（カウンタで警告のみ）。
     """
     publish_at_pretty = format_publish_at_pretty(video.publish_at_utc)
     url = video.url
@@ -205,15 +163,7 @@ def build_tweet_from_template(template_body: str, video: Video, snippet: str, ma
         snippet=snippet,
         publish_at=publish_at_pretty,
     )
-    tweet = prioritize_and_fit(
-        raw=raw,
-        url_text=url,
-        title_text=title,
-        snippet_text=snippet,
-        publish_text=publish_at_pretty,
-        max_units=max_units,
-    )
-    return tweet
+    return raw
 
 # ==============================
 # Google OAuth
@@ -379,7 +329,7 @@ def save_templates_to_sheets(creds: Credentials, templates: List[Template]) -> N
     values = [[t.id, t.name, t.body, "TRUE" if t.is_default else "FALSE"] for t in templates]
     service.spreadsheets().values().clear(
         spreadsheetId=SPREADSHEET_ID,
-        range="Templates!A2:D",
+        range="Templates!A2:D"
     ).execute()
     if values:
         service.spreadsheets().values().update(
@@ -454,7 +404,6 @@ def main():
         st.write("まずは Google アカウントとの連携を行ってください。")
         st.caption("※Googleの認証画面が別タブで開きます。認証後、この画面に戻ってきてください。")
         start_google_oauth()
-        # 認証前はここで終了
         st.stop()
     else:
         cols_auth = st.columns([3, 1])
@@ -540,14 +489,12 @@ def main():
     tmpl_changed = (prev_tmpl_id is not None and prev_tmpl_id != selected_template.id)
 
     if is_first or video_changed or tmpl_changed:
-        # テンプレ編集側も選択テンプレに同期
         st.session_state["tmpl_picker"] = selected_template.name
         st.session_state["tmpl_editor_name"] = selected_template.name
         st.session_state["tmpl_editor_body"] = selected_template.body
         st.session_state["current_template_id"] = selected_template.id
 
-        # 動画 or テンプレが変わったタイミングでツイート本文を再生成
-        snippet = extract_snippet(current_video.description)  # 250unit上限
+        snippet = extract_snippet(current_video.description)  # 概要由来は200unitまで
         tweet = build_tweet_from_template(
             selected_template.body,
             current_video,
@@ -555,11 +502,9 @@ def main():
         )
         st.session_state["tweet_text"] = tweet
 
-    # 現在の選択状態を保存
     st.session_state["prev_selected_video_id"] = current_video.video_id
     st.session_state["prev_selected_template_id"] = selected_template.id
 
-    # 初期の「現在のテンプレ」IDを選択に合わせる（念のため）
     if st.session_state["current_template_id"] is None:
         st.session_state["current_template_id"] = selected_template.id
 
@@ -573,44 +518,11 @@ def main():
     st.write(f"**公開予定日時：** {format_publish_at(current_video.publish_at_utc)}")
     st.write(f"**動画URL：** {current_video.url}")
 
-    # 概要欄
+    # 概要欄（全文をプレビュー）
     with st.expander("概要欄を確認する"):
         st.text(current_video.description)
 
-    # テンプレ呼び出し（適用のみ）
-    with st.popover("📄 テンプレを呼び出す（一覧から選択）", use_container_width=True):
-        name_map = {
-            (f"★ {t.name}" if t.is_default else t.name): t.id
-            for t in templates
-        }
-        labels_sorted = sorted(
-            name_map.keys(),
-            key=lambda x: (not x.startswith("★ "), x.lower()),
-        )
-        sel_label = st.radio(
-            "テンプレを選んでください",
-            options=labels_sorted,
-            index=0,
-        )
-        sel_tmpl = next(t for t in templates if t.id == name_map[sel_label])
-        st.text_area("プレビュー", value=sel_tmpl.body, height=140, disabled=True)
-        if st.button(
-            "このテンプレを本文に反映する（自動差し込み）",
-            use_container_width=True,
-            key=f"apply_auto_{sel_tmpl.id}",
-        ):
-            st.session_state["current_template_id"] = sel_tmpl.id
-            st.session_state["tmpl_picker"] = sel_tmpl.name
-            st.session_state["tmpl_editor_name"] = sel_tmpl.name
-            st.session_state["tmpl_editor_body"] = sel_tmpl.body
-
-            snippet = extract_snippet(current_video.description)  # 既に250unit上限
-            tweet = build_tweet_from_template(sel_tmpl.body, current_video, snippet)
-            st.session_state["tweet_text"] = tweet
-            st.success("テンプレ＋差し込みで本文を作成・反映しました。")
-            st.rerun()
-
-    # 現在のテンプレ（current_template_id を優先）
+    # 現在のテンプレ
     cur_tmpl = next(
         (t for t in templates if t.id == st.session_state["current_template_id"]),
         selected_template,
@@ -619,8 +531,8 @@ def main():
     st.write(f"**テンプレ名：** {cur_tmpl.name}")
     st.code(cur_tmpl.body or "(本文なし)", language=None)
 
-    # テンプレ編集（呼び出したテンプレ本文を編集）
-    with st.expander("🔧 テンプレ編集（選択→内容を編集→保存）"):
+    # テンプレ編集
+    with st.expander("テンプレを編集する"):
         if st.session_state["tmpl_picker"] is None:
             st.session_state["tmpl_picker"] = cur_tmpl.name
             st.session_state["tmpl_editor_name"] = cur_tmpl.name
@@ -708,10 +620,9 @@ def main():
                 except Exception as e:
                     st.error(f"削除に失敗しました：{e}")
 
-        # 現在のテンプレでツイートを再生成
         st.markdown("---")
         if st.button("🌀 現在のテンプレを使用して再出力"):
-            snippet = extract_snippet(current_video.description)  # 250unit上限
+            snippet = extract_snippet(current_video.description)  # 200unit 上限
             tweet = build_tweet_from_template(
                 st.session_state["tmpl_editor_body"],
                 current_video,
@@ -721,13 +632,12 @@ def main():
             st.success("現在のテンプレでツイート本文を再生成しました。")
             st.rerun()
 
-        # 差し込みキーワードの意味（折りたたみ）
         st.markdown("---")
         with st.expander("差し込みキーワードの意味", expanded=False):
             st.markdown("**タイトル**（動画タイトルがそのまま入ります）")
             st.code("{title}", language=None)
 
-            st.markdown("**概要（自動要約）**（概要欄から自動で抜き出した短い説明文が入ります。最大250unit）")
+            st.markdown("**概要（自動要約）**（概要欄から自動で抜き出した短い説明文が入ります。概要由来は合計200unitまで）")
             st.code("{snippet}", language=None)
 
             st.markdown("**動画URL**（YouTubeの動画URLが入ります。URLは24unit換算）")
@@ -745,7 +655,7 @@ def main():
 
     st.info(f"⏰ この動画の公開予定日時： {format_publish_at(current_video.publish_at_utc)}")
 
-    # 文字数カウント
+    # 文字数カウント（警告のみで自動カットはしない）
     body_units, url_units, url_count = count_units_breakdown(tweet_text or "")
     total_units = body_units + url_units
     if total_units > 280:
