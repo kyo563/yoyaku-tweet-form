@@ -98,7 +98,7 @@ def extract_snippet(description: str, max_units: int = 200) -> str:
         if not s or s.startswith("#") or re.search(r"https?://", s):
             continue
         cleaned.append(s)
-    # ここだけ 200unit 上限を適用（デフォルト280から切り替え）
+    # ここだけ 200unit 上限を適用
     return truncate_to_limit(" ".join(cleaned), max_units=max_units)
 
 def format_publish_at(dt: datetime, tz_name: str = "Asia/Tokyo") -> str:
@@ -225,153 +225,84 @@ def ensure_valid_creds(creds: Optional[Credentials]) -> Optional[Credentials]:
 
 def fetch_scheduled_videos(creds: Credentials) -> List[Video]:
     """
-    予約投稿の通常動画/ショート + 配信開始前のライブ(upcoming) をまとめて取得する。
-
-    - 予約投稿動画:
-        status.publishAt があり、
-        privacyStatus == "private" かつ publishAt が現在より未来のもの
-    - 予約ライブ:
-        liveBroadcasts().list で broadcastStatus="upcoming" を取得し、
-        snippet.scheduledStartTime が現在より未来のもの
+    予約投稿の通常動画/ショートのみを取得する。
+    （status.publishAt があり、privacyStatus == "private" かつ publishAt が現在より未来のもの）
     """
     creds = ensure_valid_creds(creds)
     youtube = build("youtube", "v3", credentials=creds)
     now = datetime.now(timezone.utc)
 
-    videos_uploads: List[Video] = []
-    videos_lives: List[Video] = []
+    videos: List[Video] = []
 
-    # ==============================
-    # 1) 予約投稿動画（通常動画/ショート）＋ チャンネルID取得
-    # ==============================
-    channel_id: Optional[str] = None
-
+    # 自チャンネルの uploads プレイリストIDを取得
     channels_resp = youtube.channels().list(
-        part="contentDetails,id",  # id も一緒に取得
+        part="contentDetails",
         mine=True,
     ).execute()
     items = channels_resp.get("items", [])
-    if items:
-        uploads_playlist_id = items[0]["contentDetails"]["relatedPlaylists"]["uploads"]
-        channel_id = items[0]["id"]
+    if not items:
+        return []
 
-        video_ids: List[str] = []
-        page_token = None
-        while True:
-            pl = youtube.playlistItems().list(
-                part="contentDetails",
-                playlistId=uploads_playlist_id,
-                maxResults=50,
-                pageToken=page_token,
-            ).execute()
-            video_ids += [
-                it["contentDetails"]["videoId"]
-                for it in pl.get("items", [])
-            ]
-            page_token = pl.get("nextPageToken")
-            if not page_token:
-                break
+    uploads_playlist_id = items[0]["contentDetails"]["relatedPlaylists"]["uploads"]
 
-        if video_ids:
-            for i in range(0, len(video_ids), 50):
-                resp = youtube.videos().list(
-                    part="snippet,status",
-                    id=",".join(video_ids[i:i + 50]),
-                ).execute()
-                for item in resp.get("items", []):
-                    status = item.get("status", {})
-                    snip = item.get("snippet", {})
+    # uploads プレイリストから videoId を全件取得
+    video_ids: List[str] = []
+    page_token = None
+    while True:
+        pl = youtube.playlistItems().list(
+            part="contentDetails",
+            playlistId=uploads_playlist_id,
+            maxResults=50,
+            pageToken=page_token,
+        ).execute()
+        video_ids += [
+            it["contentDetails"]["videoId"]
+            for it in pl.get("items", [])
+        ]
+        page_token = pl.get("nextPageToken")
+        if not page_token:
+            break
 
-                    publish_at_str = status.get("publishAt")
-                    if not publish_at_str:
-                        # 通常の即時公開・ライブVODなどはスキップ
-                        continue
-                    try:
-                        publish_dt = datetime.fromisoformat(
-                            publish_at_str.replace("Z", "+00:00")
-                        )
-                    except ValueError:
-                        continue
+    if not video_ids:
+        return []
 
-                    # 「公開日時指定の予約投稿」だけを拾う
-                    if status.get("privacyStatus") != "private":
-                        continue
-                    if publish_dt <= now:
-                        continue
+    # videoId ごとに videos().list で詳細を取得し、予約投稿だけを抽出
+    for i in range(0, len(video_ids), 50):
+        resp = youtube.videos().list(
+            part="snippet,status",
+            id=",".join(video_ids[i:i + 50]),
+        ).execute()
+        for item in resp.get("items", []):
+            status = item.get("status", {})
+            snip = item.get("snippet", {})
 
-                    videos_uploads.append(
-                        Video(
-                            video_id=item["id"],
-                            title=snip.get("title", ""),
-                            description=snip.get("description", ""),
-                            publish_at_utc=publish_dt,
-                        )
-                    )
+            publish_at_str = status.get("publishAt")
+            if not publish_at_str:
+                # 即時公開やアーカイブなど publishAt が無いものは除外
+                continue
 
-    # ==============================
-    # 2) 配信開始前のライブ（upcoming）
-    #    ※ broadcastStatus と mine は同時指定できないので channelId を使用
-    # ==============================
-    if channel_id:
-        page_token = None
-        while True:
-            resp = youtube.liveBroadcasts().list(
-                part="snippet,status",
-                broadcastStatus="upcoming",
-                broadcastType="all",
-                channelId=channel_id,
-                maxResults=50,
-                pageToken=page_token,
-            ).execute()
-
-            for item in resp.get("items", []):
-                status = item.get("status", {})
-                snip = item.get("snippet", {})
-
-                # ライブの開始予定時刻
-                sched_str = snip.get("scheduledStartTime")
-                if not sched_str:
-                    continue
-                try:
-                    sched_dt = datetime.fromisoformat(
-                        sched_str.replace("Z", "+00:00")
-                    )
-                except ValueError:
-                    continue
-
-                if sched_dt <= now:
-                    # 直前に過ぎたものなどは除外
-                    continue
-
-                # URL公開済みだけに絞りたい場合は以下のように privacyStatus を見る選択肢もある
-                # if status.get("privacyStatus") not in ("public", "unlisted"):
-                #     continue
-
-                video_id = item.get("id")
-                if not video_id:
-                    continue
-
-                videos_lives.append(
-                    Video(
-                        video_id=video_id,
-                        title=snip.get("title", ""),
-                        description=snip.get("description", ""),
-                        publish_at_utc=sched_dt,
-                    )
+            try:
+                publish_dt = datetime.fromisoformat(
+                    publish_at_str.replace("Z", "+00:00")
                 )
+            except ValueError:
+                continue
 
-            page_token = resp.get("nextPageToken")
-            if not page_token:
-                break
+            # 「公開日時指定の予約投稿」だけを拾う
+            if status.get("privacyStatus") != "private":
+                continue
+            if publish_dt <= now:
+                continue
 
-    # ==============================
-    # 3) マージ & ソート
-    # ==============================
-    videos_by_id: dict[str, Video] = {}
-    for v in videos_uploads + videos_lives:
-        videos_by_id[v.video_id] = v  # ID が同じなら後勝ちで上書き
+            videos.append(
+                Video(
+                    video_id=item["id"],
+                    title=snip.get("title", ""),
+                    description=snip.get("description", ""),
+                    publish_at_utc=publish_dt,
+                )
+            )
 
-    videos: List[Video] = list(videos_by_id.values())
     videos.sort(key=lambda v: v.publish_at_utc)
     return videos
 
@@ -543,7 +474,7 @@ def main():
                 if st.session_state["videos"]:
                     st.success(f"{len(st.session_state['videos'])} 件の予約動画を取得しました。")
                 else:
-                    st.warning("予約投稿中／配信予定の動画が見つかりませんでした。")
+                    st.warning("予約投稿中の動画が見つかりませんでした。")
             except Exception as e:
                 st.error(f"予約動画の取得に失敗しました：{e}")
 
