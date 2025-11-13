@@ -441,6 +441,9 @@ def main():
     st.session_state.setdefault("tmpl_editor_name", "")
     st.session_state.setdefault("tmpl_editor_body", "")
     st.session_state.setdefault("current_template_id", None)  # 「現在のテンプレ」表示用
+    # 選択状態の記録（自動更新用）
+    st.session_state.setdefault("prev_selected_video_id", None)
+    st.session_state.setdefault("prev_selected_template_id", None)
 
     creds: Optional[Credentials] = st.session_state["google_creds"]
 
@@ -468,6 +471,8 @@ def main():
                     "tmpl_editor_body",
                     "tmpl_picker",
                     "current_template_id",
+                    "prev_selected_video_id",
+                    "prev_selected_template_id",
                 ]:
                     st.session_state.pop(k, None)
                 st.rerun()
@@ -526,7 +531,35 @@ def main():
             t for t in templates if t.id == tmpl_map[selected_tmpl_label]
         )
 
-    # 初期の「現在のテンプレ」IDを選択に合わせる（初回のみ）
+    # --- 選択変更時にツイート本文 & 現在テンプレを自動更新 ---
+    prev_vid_id = st.session_state.get("prev_selected_video_id")
+    prev_tmpl_id = st.session_state.get("prev_selected_template_id")
+
+    is_first = (prev_vid_id is None and prev_tmpl_id is None)
+    video_changed = (prev_vid_id is not None and prev_vid_id != current_video.video_id)
+    tmpl_changed = (prev_tmpl_id is not None and prev_tmpl_id != selected_template.id)
+
+    if is_first or video_changed or tmpl_changed:
+        # テンプレ編集側も選択テンプレに同期
+        st.session_state["tmpl_picker"] = selected_template.name
+        st.session_state["tmpl_editor_name"] = selected_template.name
+        st.session_state["tmpl_editor_body"] = selected_template.body
+        st.session_state["current_template_id"] = selected_template.id
+
+        # 動画 or テンプレが変わったタイミングでツイート本文を再生成
+        snippet = extract_snippet(current_video.description)  # 250unit上限
+        tweet = build_tweet_from_template(
+            selected_template.body,
+            current_video,
+            snippet,
+        )
+        st.session_state["tweet_text"] = tweet
+
+    # 現在の選択状態を保存
+    st.session_state["prev_selected_video_id"] = current_video.video_id
+    st.session_state["prev_selected_template_id"] = selected_template.id
+
+    # 初期の「現在のテンプレ」IDを選択に合わせる（念のため）
     if st.session_state["current_template_id"] is None:
         st.session_state["current_template_id"] = selected_template.id
 
