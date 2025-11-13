@@ -501,7 +501,7 @@ def main():
         with cols_auth[0]:
             st.success("✅ Google認証済みです。")
         with cols_auth[1]:
-            if st.button("認証をリセット（このブラウザのみ）"):
+            if st.button("認証をリセット"):
                 for k in [
                     "google_creds",
                     "videos",
@@ -603,7 +603,7 @@ def main():
     # メイン：動画情報 & テンプレ編集
     # ==============================
 
-    st.subheader("③ 自動生成と編集")
+    st.subheader("③ 　告知文を作成する")
 
     st.write(f"**動画タイトル：** {current_video.title}")
     st.write(f"**公開予定日時：** {format_publish_at(current_video.publish_at_utc)}")
@@ -618,7 +618,7 @@ def main():
         (t for t in templates if t.id == st.session_state["current_template_id"]),
         selected_template,
     )
-    st.markdown("#### 現在のテンプレ")
+    st.markdown("#### 現在選択しているテンプレ")
     st.write(f"**テンプレ名：** {cur_tmpl.name}")
     st.code(cur_tmpl.body or "(本文なし)", language=None)
 
@@ -712,7 +712,7 @@ def main():
                     st.error(f"削除に失敗しました：{e}")
 
         st.markdown("---")
-        if st.button("🌀 現在のテンプレを使用して再出力"):
+        if st.button("🌀 現在のテンプレを使用して再出力する↓"):
             snippet = extract_snippet(current_video.description)  # 200unit 上限
             tweet = build_tweet_from_template(
                 st.session_state["tmpl_editor_body"],
@@ -728,23 +728,23 @@ def main():
             st.markdown("**タイトル**（動画タイトルがそのまま入ります）")
             st.code("{title}", language=None)
 
-            st.markdown("**概要（自動要約）**（概要欄から自動で抜き出した短い説明文が入ります。概要由来は合計200unitまで）")
+            st.markdown("**概要（冒頭200文字）**")
             st.code("{snippet}", language=None)
 
-            st.markdown("**動画URL**（YouTubeの動画URLが入ります。URLは24unit換算）")
+            st.markdown("**動画URL**（YouTubeの動画URLが入ります。URLは24文字換算）")
             st.code("{url}", language=None)
 
-            st.markdown("**公開日時**（m月d日(曜) 形式で入ります。例：11月12日(水)）")
+            st.markdown("**予約済みの公開日時**（m月d日(曜) 形式で入ります。例：11月12日(水)）")
             st.code("{publish_at}", language=None)
 
     # ===== ツイート本文 =====
     tweet_text = st.text_area(
-        "✏️ ツイート本文（ここで自由に編集できます。改行もそのまま反映されます）",
+        "✏️ 投稿本文（ここで自由に編集できます）",
         key="tweet_text",
         height=240,
     )
     # 注意書き
-    st.caption("CTRL+Enterで文字数カウント")
+    st.caption("CTRL+Enterで再度文字数をカウント")
 
     st.info(f"⏰ この動画の公開予定日時： {format_publish_at(current_video.publish_at_utc)}")
 
