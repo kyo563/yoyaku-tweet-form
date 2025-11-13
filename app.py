@@ -242,15 +242,18 @@ def fetch_scheduled_videos(creds: Credentials) -> List[Video]:
     videos_lives: List[Video] = []
 
     # ==============================
-    # 1) 予約投稿動画（通常動画/ショート）
+    # 1) 予約投稿動画（通常動画/ショート）＋ チャンネルID取得
     # ==============================
+    channel_id: Optional[str] = None
+
     channels_resp = youtube.channels().list(
-        part="contentDetails",
+        part="contentDetails,id",  # id も一緒に取得
         mine=True,
     ).execute()
     items = channels_resp.get("items", [])
     if items:
         uploads_playlist_id = items[0]["contentDetails"]["relatedPlaylists"]["uploads"]
+        channel_id = items[0]["id"]
 
         video_ids: List[str] = []
         page_token = None
@@ -307,57 +310,59 @@ def fetch_scheduled_videos(creds: Credentials) -> List[Video]:
 
     # ==============================
     # 2) 配信開始前のライブ（upcoming）
+    #    ※ broadcastStatus と mine は同時指定できないので channelId を使用
     # ==============================
-    page_token = None
-    while True:
-        resp = youtube.liveBroadcasts().list(
-            part="snippet,status",
-            broadcastStatus="upcoming",
-            broadcastType="all",
-            mine=True,
-            maxResults=50,
-            pageToken=page_token,
-        ).execute()
+    if channel_id:
+        page_token = None
+        while True:
+            resp = youtube.liveBroadcasts().list(
+                part="snippet,status",
+                broadcastStatus="upcoming",
+                broadcastType="all",
+                channelId=channel_id,
+                maxResults=50,
+                pageToken=page_token,
+            ).execute()
 
-        for item in resp.get("items", []):
-            status = item.get("status", {})
-            snip = item.get("snippet", {})
+            for item in resp.get("items", []):
+                status = item.get("status", {})
+                snip = item.get("snippet", {})
 
-            # ライブの開始予定時刻
-            sched_str = snip.get("scheduledStartTime")
-            if not sched_str:
-                continue
-            try:
-                sched_dt = datetime.fromisoformat(
-                    sched_str.replace("Z", "+00:00")
+                # ライブの開始予定時刻
+                sched_str = snip.get("scheduledStartTime")
+                if not sched_str:
+                    continue
+                try:
+                    sched_dt = datetime.fromisoformat(
+                        sched_str.replace("Z", "+00:00")
+                    )
+                except ValueError:
+                    continue
+
+                if sched_dt <= now:
+                    # 直前に過ぎたものなどは除外
+                    continue
+
+                # URL公開済みだけに絞りたい場合は以下のように privacyStatus を見る選択肢もある
+                # if status.get("privacyStatus") not in ("public", "unlisted"):
+                #     continue
+
+                video_id = item.get("id")
+                if not video_id:
+                    continue
+
+                videos_lives.append(
+                    Video(
+                        video_id=video_id,
+                        title=snip.get("title", ""),
+                        description=snip.get("description", ""),
+                        publish_at_utc=sched_dt,
+                    )
                 )
-            except ValueError:
-                continue
 
-            if sched_dt <= now:
-                # 直前に過ぎたものなどは除外
-                continue
-
-            # URL公開済みだけに絞りたい場合は以下のように privacyStatus を見る選択肢もある
-            # if status.get("privacyStatus") not in ("public", "unlisted"):
-            #     continue
-
-            video_id = item.get("id")
-            if not video_id:
-                continue
-
-            videos_lives.append(
-                Video(
-                    video_id=video_id,
-                    title=snip.get("title", ""),
-                    description=snip.get("description", ""),
-                    publish_at_utc=sched_dt,
-                )
-            )
-
-        page_token = resp.get("nextPageToken")
-        if not page_token:
-            break
+            page_token = resp.get("nextPageToken")
+            if not page_token:
+                break
 
     # ==============================
     # 3) マージ & ソート
