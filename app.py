@@ -816,6 +816,8 @@ def main():
 
     # 見出し
     st.markdown("#### ✏️ 投稿本文（ここで自由に編集できます）")
+    # 説明文（ご指定の文言）
+    st.caption("CTRL+Enter、カウントボタンで最新の文字数を再計算")
 
     # クリップボード用に、現時点の tweet_text をエスケープ（セッションから取得）
     current_text_for_copy = st.session_state.get("tweet_text", "") or ""
@@ -827,7 +829,8 @@ def main():
         .replace("\n", "\\n")
     )
 
-    # 「文字数カウント」「クリップボードにコピー」を同じスタイルで横並び表示
+    # 「文字数カウント」「クリップボードにコピー」を同じスタイルで
+    # 説明文の直下に横並び表示
     buttons_html = f"""
     <div style="margin: 0.25rem 0 0.5rem 0; display: flex; flex-wrap: wrap; gap: 8px;">
       <button
@@ -855,11 +858,8 @@ def main():
     tweet_text = st.text_area(
         label="",
         key="tweet_text",
-        height=240,  # デフォルトの表示高さ（ここを変えれば行数感を調整可能）
+        height=240,  # デフォルトの表示高さ
     )
-
-    # ヒント
-    st.caption("本文を編集すると文字数カウントは自動で更新されます。必要に応じて「文字数カウント」ボタンを押して確認してください。")
 
     # 曜日付きのフォーマットで表示
     st.info(f"⏰ この動画の公開予定日時： {format_publish_at_with_weekday(current_video.publish_at_utc)}")
