@@ -109,6 +109,21 @@ def format_publish_at(dt: datetime, tz_name: str = "Asia/Tokyo") -> str:
         local = dt
     return local.strftime("%Y/%m/%d %H:%M")
 
+def format_publish_at_with_weekday(dt: datetime, tz_name: str = "Asia/Tokyo") -> str:
+    """
+    yyyy/mm/dd(曜) hh:mm 形式で返す。曜は日本語一文字。
+    例: 2025/11/14(金) 21:00
+    """
+    try:
+        from zoneinfo import ZoneInfo
+        local = dt.astimezone(ZoneInfo(tz_name))
+    except Exception:
+        local = dt
+    wd = ["月", "火", "水", "木", "金", "土", "日"][local.weekday()]
+    date_str = local.strftime("%Y/%m/%d")
+    time_str = local.strftime("%H:%M")
+    return f"{date_str}({wd}) {time_str}"
+
 def format_publish_at_pretty(dt: datetime, tz_name: str = "Asia/Tokyo") -> str:
     """
     m月d日(曜) 形式で返す。曜は日本語の一文字（例：水）。
@@ -756,6 +771,12 @@ def main():
             st.code("{publish_at}", language=None)
 
     # ===== ツイート本文 =====
+
+    # ここで再度、確認用にタイトルとURLを表示
+    st.markdown("#### 対象動画（確認用）")
+    st.write(f"**動画タイトル：** {current_video.title}")
+    st.write(f"**動画URL：** {current_video.url}")
+
     tweet_text = st.text_area(
         "✏️ 投稿本文（ここで自由に編集できます）",
         key="tweet_text",
@@ -764,7 +785,8 @@ def main():
     # 注意書き
     st.caption("CTRL+Enterで再度文字数をカウント")
 
-    st.info(f"⏰ この動画の公開予定日時： {format_publish_at(current_video.publish_at_utc)}")
+    # 曜日付きのフォーマットで表示
+    st.info(f"⏰ この動画の公開予定日時： {format_publish_at_with_weekday(current_video.publish_at_utc)}")
 
     # 文字数カウント（警告のみで自動カットはしない）
     body_units, url_units, url_count = count_units_breakdown(tweet_text or "")
