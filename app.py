@@ -90,6 +90,7 @@ def extract_snippet(description: str, max_units: int = 250) -> str:
     """
     概要欄からURL/見出し行を除いた短文を生成。
     ツイート本文中で「概要欄由来として使ってよい予算」は 250unit までとする。
+    改行はそのまま保持して差し込む。
     """
     lines = description.splitlines()
     cleaned = []
@@ -98,8 +99,8 @@ def extract_snippet(description: str, max_units: int = 250) -> str:
         if not s or s.startswith("#") or re.search(r"https?://", s):
             continue
         cleaned.append(s)
-    # ここだけ 250unit 上限を適用
-    return truncate_to_limit(" ".join(cleaned), max_units=max_units)
+    # ここだけ 250unit 上限を適用（改行は "\n" で保持）
+    return truncate_to_limit("\n".join(cleaned), max_units=max_units)
 
 def format_publish_at(dt: datetime, tz_name: str = "Asia/Tokyo") -> str:
     try:
@@ -559,7 +560,7 @@ def main():
         st.session_state["templates_loaded"] = True
     templates: List[Template] = st.session_state["templates"]
 
-    # ② 予約動画の取得と対象動画・テンプレ選択（メイン上部）
+    # ② 対象動画とテンプレートの選択
     st.subheader("② 対象動画とテンプレートの選択")
 
     # 1行目：ボタンのみ
@@ -619,7 +620,7 @@ def main():
         st.session_state["tmpl_editor_body"] = selected_template.body
         st.session_state["current_template_id"] = selected_template.id
 
-        snippet = extract_snippet(current_video.description)  # 概要由来は最大250unitまで
+        snippet = extract_snippet(current_video.description)  # 概要由来は最大250unitまで（改行保持）
         tweet = build_tweet_from_template(
             selected_template.body,
             current_video,
@@ -752,7 +753,7 @@ def main():
 
         st.markdown("---")
         if st.button("🌀 現在のテンプレを使用して再出力する↓"):
-            snippet = extract_snippet(current_video.description)  # 最大250unit 上限
+            snippet = extract_snippet(current_video.description)  # 最大250unit 上限（改行保持）
             tweet = build_tweet_from_template(
                 st.session_state["tmpl_editor_body"],
                 current_video,
@@ -767,7 +768,7 @@ def main():
             st.markdown("**タイトル**（動画タイトルがそのまま入ります）")
             st.code("{title}", language=None)
 
-            st.markdown("**概要（冒頭250文字相当）**")
+            st.markdown("**概要（冒頭250文字相当・改行保持）**")
             st.code("{snippet}", language=None)
 
             st.markdown("**動画URL**（YouTubeの動画URLが入ります。URLは24文字換算）")
@@ -787,18 +788,21 @@ def main():
         st.write(f"**公開予定日時：** {format_publish_at_with_weekday(current_video.publish_at_utc)}")
     st.write(f"**動画URL：** {current_video.url}")
 
-    # テキストエリアと「文字数カウント」ボタンを横並び
-    col_textarea, col_count_btn = st.columns([4, 1])
-    with col_textarea:
-        tweet_text = st.text_area(
-            "✏️ 投稿本文（ここで自由に編集できます）",
-            key="tweet_text",
-            height=240,
-        )
+    # 見出しと「文字数カウント」ボタンを横並び
+    col_label, col_count_btn = st.columns([4, 1])
+    with col_label:
+        st.markdown("#### ✏️ 投稿本文（ここで自由に編集できます）")
     with col_count_btn:
-        st.write("")
+        st.write("")  # 縦位置合わせ
         st.write("")
         st.button("文字数カウント")
+
+    # テキストエリア本体
+    tweet_text = st.text_area(
+        label="",
+        key="tweet_text",
+        height=240,
+    )
 
     # ヒント
     st.caption("「文字数カウント」ボタンを押すと、現在の本文の文字数を再計算します。")
