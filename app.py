@@ -773,12 +773,12 @@ def main():
     # ===== ツイート本文 =====
 
     # ここで再度、確認用にタイトルとURLを表示
-    st.markdown("#### 対象動画（確認用）")
+    st.markdown("#### 告知文作成")
     st.write(f"**動画タイトル：** {current_video.title}")
     st.write(f"**動画URL：** {current_video.url}")
 
     tweet_text = st.text_area(
-        "✏️ 投稿本文（ここで自由に編集できます）",
+        "✏️ 投稿本文（ここで自由に編集できます。作成後、「下のクリップボードにコピー」を押して作成完了です）",
         key="tweet_text",
         height=240,
     )
