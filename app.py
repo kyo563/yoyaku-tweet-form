@@ -88,19 +88,12 @@ def count_units_breakdown(text: str) -> tuple[int, int, int]:
 
 def extract_snippet(description: str, max_units: int = 250) -> str:
     """
-    概要欄からURL/見出し行を除いた短文を生成。
-    ツイート本文中で「概要欄由来として使ってよい予算」は 250unit までとする。
-    改行はそのまま保持して差し込む。
+    概要欄をそのまま短く切り出す。
+    URL や # で始まる行も含めて、改行込みで保持したまま 250unit までに制限する。
     """
-    lines = description.splitlines()
-    cleaned = []
-    for line in lines:
-        s = line.strip()
-        if not s or s.startswith("#") or re.search(r"https?://", s):
-            continue
-        cleaned.append(s)
-    # ここだけ 250unit 上限を適用（改行は "\n" で保持）
-    return truncate_to_limit("\n".join(cleaned), max_units=max_units)
+    # 改行コードを一応統一
+    normalized = description.replace("\r\n", "\n").replace("\r", "\n")
+    return truncate_to_limit(normalized, max_units=max_units)
 
 def format_publish_at(dt: datetime, tz_name: str = "Asia/Tokyo") -> str:
     try:
