@@ -89,10 +89,10 @@ def count_units_breakdown(text: str) -> tuple[int, int, int]:
     body_units += count_units(text[pos:])
     return body_units, URL_UNITS * url_count, url_count
 
-def extract_snippet(description: str, max_units: int = 250) -> str:
+def extract_snippet(description: str, max_units: int = 200) -> str:
     """
     概要欄をそのまま短く切り出す。
-    URL や # で始まる行も含めて、改行込みで保持したまま 250unit までに制限する。
+    URL や # で始まる行も含めて、改行込みで保持したまま 200unit までに制限する。
     """
     normalized = description.replace("\r\n", "\n").replace("\r", "\n")
     return truncate_to_limit(normalized, max_units=max_units)
@@ -134,7 +134,7 @@ def build_tweet_from_template(template_body: str, video: Video, snippet: str, ma
     """
     テンプレに差し込み後、そのまま返す。
     {url} / {title} / {publish_at} は常に全文を挿入し、
-    {snippet} は extract_snippet 側で 250unit 以内に調整済みとする。
+    {snippet} は extract_snippet 側で 200unit 以内に調整済みとする。
     280unit を超えてもここでは削らない（カウンタで警告のみ）。
     """
     publish_at_pretty = format_publish_at_pretty(video.publish_at_utc)
@@ -601,7 +601,7 @@ def main():
         st.session_state["tmpl_editor_body"] = selected_template.body
         st.session_state["current_template_id"] = selected_template.id
 
-        snippet = extract_snippet(current_video.description)  # 概要由来は最大250unitまで（改行保持）
+        snippet = extract_snippet(current_video.description)  # 概要由来は最大200unitまで（改行保持）
         tweet = build_tweet_from_template(
             selected_template.body,
             current_video,
@@ -734,7 +734,7 @@ def main():
 
         st.markdown("---")
         if st.button("🌀 現在のテンプレを使用して再出力する↓"):
-            snippet = extract_snippet(current_video.description)  # 最大250unit 上限（改行保持）
+            snippet = extract_snippet(current_video.description)  # 最大200unit 上限（改行保持）
             tweet = build_tweet_from_template(
                 st.session_state["tmpl_editor_body"],
                 current_video,
@@ -749,7 +749,7 @@ def main():
             st.markdown("**タイトル**（動画タイトルがそのまま入ります）")
             st.code("{title}", language=None)
 
-            st.markdown("**概要（冒頭250文字相当・改行保持）**")
+            st.markdown("**概要（冒頭200文字相当・改行保持）**")
             st.code("{snippet}", language=None)
 
             st.markdown("**動画URL**（YouTubeの動画URLが入ります。URLは24文字換算）")
