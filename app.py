@@ -819,18 +819,37 @@ def main():
     # 説明文（ご指定の文言）
     st.caption("CTRL+Enter、カウントボタンで最新の文字数を再計算")
 
-    # クリップボード用に、現時点の tweet_text をエスケープ（セッションから取得）
-    current_text_for_copy = st.session_state.get("tweet_text", "") or ""
+    # テキストエリア本体（編集用）
+    tweet_text = st.text_area(
+        label="",
+        key="tweet_text",
+        height=240,  # デフォルトの表示高さ
+    )
+
+    # 曜日付きのフォーマットで表示
+    st.info(f"⏰ この動画の公開予定日時： {format_publish_at_with_weekday(current_video.publish_at_utc)}")
+
+    # 文字数カウント（常に最新値を表示）
+    body_units, url_units, url_count = count_units_breakdown(tweet_text or "")
+    total_units = body_units + url_units
+    if total_units > 280:
+        st.error(
+            f"現在 {total_units}字（本文{body_units}字 + URL{url_units}字 / URL本数 {url_count}）－ 280字を超えています。"
+        )
+    else:
+        st.write(
+            f"現在 **{total_units}字（本文{body_units}字 + URL{url_units}字）** ／ 280字"
+        )
+
+    # 直後にボタン2つを同じスタイルで表示
+    safe_text = (tweet_text or "")
     safe_text = (
-        current_text_for_copy
-        .replace("\\", "\\\\")
+        safe_text.replace("\\", "\\\\")
         .replace('"', '\\"')
         .replace("'", "\\'")
         .replace("\n", "\\n")
     )
 
-    # 「文字数カウント」「クリップボードにコピー」を同じスタイルで
-    # 説明文の直下に横並び表示
     buttons_html = f"""
     <div style="margin: 0.25rem 0 0.5rem 0; display: flex; flex-wrap: wrap; gap: 8px;">
       <button
@@ -853,30 +872,6 @@ def main():
     </div>
     """
     html(buttons_html, height=70)
-
-    # テキストエリア本体
-    tweet_text = st.text_area(
-        label="",
-        key="tweet_text",
-        height=240,  # デフォルトの表示高さ
-    )
-
-    # 曜日付きのフォーマットで表示
-    st.info(f"⏰ この動画の公開予定日時： {format_publish_at_with_weekday(current_video.publish_at_utc)}")
-
-    # 文字数カウント（常に最新値を表示）
-    body_units, url_units, url_count = count_units_breakdown(tweet_text or "")
-    total_units = body_units + url_units
-    if total_units > 280:
-        st.error(
-            f"現在 {total_units}字（本文{body_units}字 + URL{url_units}字 / URL本数 {url_count}）－ 280字を超えています。"
-        )
-    else:
-        st.write(
-            f"現在 **{total_units}字（本文{body_units}字 + URL{url_units}字）** ／ 280字"
-        )
-
-    # （コピー用ボタンは上で統一スタイルとして表示済み）
 
 
 if __name__ == "__main__":
