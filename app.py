@@ -757,13 +757,12 @@ def main():
         st.write(f"**公開予定日時：** {format_publish_at_with_weekday(current_video.publish_at_utc)}")
     st.write(f"**動画URL：** {current_video.url}")
 
-    # 見出しと「文字数カウント」ボタンを横並び
+    # 見出しと「文字数カウント」ボタンを同じ行に横並び
     col_label, col_count_btn = st.columns([4, 1])
     with col_label:
         st.markdown("#### ✏️ 投稿本文（ここで自由に編集できます）")
     with col_count_btn:
-        st.write("")  # 縦位置合わせ
-        st.write("")
+        # 押した瞬間に再実行されるので、それ自体が「再カウント」トリガーになる
         st.button("文字数カウント")
 
     # テキストエリア本体
