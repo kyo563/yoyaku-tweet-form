@@ -86,10 +86,10 @@ def count_units_breakdown(text: str) -> tuple[int, int, int]:
     body_units += count_units(text[pos:])
     return body_units, URL_UNITS * url_count, url_count
 
-def extract_snippet(description: str, max_units: int = 200) -> str:
+def extract_snippet(description: str, max_units: int = 250) -> str:
     """
     概要欄からURL/見出し行を除いた短文を生成。
-    ツイート本文中で「概要欄由来として使ってよい予算」は 200unit までとする。
+    ツイート本文中で「概要欄由来として使ってよい予算」は 250unit までとする。
     """
     lines = description.splitlines()
     cleaned = []
@@ -98,7 +98,7 @@ def extract_snippet(description: str, max_units: int = 200) -> str:
         if not s or s.startswith("#") or re.search(r"https?://", s):
             continue
         cleaned.append(s)
-    # ここだけ 200unit 上限を適用
+    # ここだけ 250unit 上限を適用
     return truncate_to_limit(" ".join(cleaned), max_units=max_units)
 
 def format_publish_at(dt: datetime, tz_name: str = "Asia/Tokyo") -> str:
@@ -164,7 +164,7 @@ def build_tweet_from_template(template_body: str, video: Video, snippet: str, ma
     """
     テンプレに差し込み後、そのまま返す。
     {url} / {title} / {publish_at} は常に全文を挿入し、
-    {snippet} は extract_snippet 側で 200unit 以内に調整済みとする。
+    {snippet} は extract_snippet 側で 250unit 以内に調整済みとする。
     280unit を超えてもここでは削らない（カウンタで警告のみ）。
     """
     publish_at_pretty = format_publish_at_pretty(video.publish_at_utc)
@@ -619,7 +619,7 @@ def main():
         st.session_state["tmpl_editor_body"] = selected_template.body
         st.session_state["current_template_id"] = selected_template.id
 
-        snippet = extract_snippet(current_video.description)  # 概要由来は200unitまで
+        snippet = extract_snippet(current_video.description)  # 概要由来は最大250unitまで
         tweet = build_tweet_from_template(
             selected_template.body,
             current_video,
@@ -752,7 +752,7 @@ def main():
 
         st.markdown("---")
         if st.button("🌀 現在のテンプレを使用して再出力する↓"):
-            snippet = extract_snippet(current_video.description)  # 200unit 上限
+            snippet = extract_snippet(current_video.description)  # 最大250unit 上限
             tweet = build_tweet_from_template(
                 st.session_state["tmpl_editor_body"],
                 current_video,
@@ -767,7 +767,7 @@ def main():
             st.markdown("**タイトル**（動画タイトルがそのまま入ります）")
             st.code("{title}", language=None)
 
-            st.markdown("**概要（冒頭200文字）**")
+            st.markdown("**概要（冒頭250文字相当）**")
             st.code("{snippet}", language=None)
 
             st.markdown("**動画URL**（YouTubeの動画URLが入ります。URLは24文字換算）")
@@ -787,18 +787,26 @@ def main():
         st.write(f"**公開予定日時：** {format_publish_at_with_weekday(current_video.publish_at_utc)}")
     st.write(f"**動画URL：** {current_video.url}")
 
-    tweet_text = st.text_area(
-        "✏️ 投稿本文（ここで自由に編集できます）",
-        key="tweet_text",
-        height=240,
-    )
-    # 注意書き
-    st.caption("CTRL+Enterで再度文字数をカウント")
+    # テキストエリアと「文字数カウント」ボタンを横並び
+    col_textarea, col_count_btn = st.columns([4, 1])
+    with col_textarea:
+        tweet_text = st.text_area(
+            "✏️ 投稿本文（ここで自由に編集できます）",
+            key="tweet_text",
+            height=240,
+        )
+    with col_count_btn:
+        st.write("")
+        st.write("")
+        st.button("文字数カウント")
+
+    # ヒント
+    st.caption("「文字数カウント」ボタンを押すと、現在の本文の文字数を再計算します。")
 
     # 曜日付きのフォーマットで表示
     st.info(f"⏰ この動画の公開予定日時： {format_publish_at_with_weekday(current_video.publish_at_utc)}")
 
-    # 文字数カウント（警告のみで自動カットはしない）
+    # 文字数カウント（ボタンを押しても押さなくても、常に最新値を表示）
     body_units, url_units, url_count = count_units_breakdown(tweet_text or "")
     total_units = body_units + url_units
     if total_units > 280:
