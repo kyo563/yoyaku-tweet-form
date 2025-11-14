@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import List, Optional
 
+from zoneinfo import ZoneInfo
 import streamlit as st
 from streamlit.components.v1 import html
 from google.oauth2.credentials import Credentials
@@ -22,6 +23,8 @@ SCOPES = [
 ]
 SPREADSHEET_ID = "1t34GoYFFHJdCsIjvbSGLEfD7W-cfeDgyAQoh9_u-oUU"  # 共有シートID
 URL_UNITS = 24  # X(Twitter) URL固定長（安全側24）
+DEFAULT_TZ = "Asia/Tokyo"
+WEEKDAYS_JP = ["月", "火", "水", "木", "金", "土", "日"]
 
 # ==============================
 # データ構造
@@ -91,68 +94,41 @@ def extract_snippet(description: str, max_units: int = 250) -> str:
     概要欄をそのまま短く切り出す。
     URL や # で始まる行も含めて、改行込みで保持したまま 250unit までに制限する。
     """
-    # 改行コードを一応統一
     normalized = description.replace("\r\n", "\n").replace("\r", "\n")
     return truncate_to_limit(normalized, max_units=max_units)
 
-def format_publish_at(dt: datetime, tz_name: str = "Asia/Tokyo") -> str:
+# ==============================
+# 日付フォーマット
+# ==============================
+
+def to_local(dt: datetime, tz_name: str = DEFAULT_TZ) -> datetime:
     try:
-        from zoneinfo import ZoneInfo
-        local = dt.astimezone(ZoneInfo(tz_name))
+        return dt.astimezone(ZoneInfo(tz_name))
     except Exception:
-        local = dt
+        return dt
+
+def format_publish_at(dt: datetime, tz_name: str = DEFAULT_TZ) -> str:
+    local = to_local(dt, tz_name)
     return local.strftime("%Y/%m/%d %H:%M")
 
-def format_publish_at_with_weekday(dt: datetime, tz_name: str = "Asia/Tokyo") -> str:
+def format_publish_at_with_weekday(dt: datetime, tz_name: str = DEFAULT_TZ) -> str:
     """
     yyyy/mm/dd(曜) hh:mm 形式で返す。曜は日本語一文字。
     例: 2025/11/14(金) 21:00
     """
-    try:
-        from zoneinfo import ZoneInfo
-        local = dt.astimezone(ZoneInfo(tz_name))
-    except Exception:
-        local = dt
-    wd = ["月", "火", "水", "木", "金", "土", "日"][local.weekday()]
+    local = to_local(dt, tz_name)
+    wd = WEEKDAYS_JP[local.weekday()]
     date_str = local.strftime("%Y/%m/%d")
     time_str = local.strftime("%H:%M")
     return f"{date_str}({wd}) {time_str}"
 
-def format_publish_at_pretty(dt: datetime, tz_name: str = "Asia/Tokyo") -> str:
+def format_publish_at_pretty(dt: datetime, tz_name: str = DEFAULT_TZ) -> str:
     """
     m月d日(曜) 形式で返す。曜は日本語の一文字（例：水）。
     """
-    try:
-        from zoneinfo import ZoneInfo
-        local = dt.astimezone(ZoneInfo(tz_name))
-    except Exception:
-        local = dt
-    wd = ["月", "火", "水", "木", "金", "土", "日"][local.weekday()]
+    local = to_local(dt, tz_name)
+    wd = WEEKDAYS_JP[local.weekday()]
     return f"{local.month}月{local.day}日({wd})"
-
-# URL/title/publish_at は削らない仕様だが、汎用関数として残しておく
-def ensure_url_and_limit(text: str, url: str, max_units: int = 280) -> str:
-    if not url or url not in text:
-        return text if count_units(text) <= max_units else truncate_to_limit(text, max_units=max_units)
-    idx = text.rfind(url)
-    prefix = text[:idx]
-    if count_units(prefix) + URL_UNITS <= max_units:
-        return prefix + url
-    allowed = max_units - URL_UNITS
-    if allowed <= 0:
-        return url
-    return truncate_to_limit(prefix, max_units=allowed) + url
-
-def prioritize_and_fit(
-    raw: str,
-    url_text: str,
-    title_text: str,
-    snippet_text: str,
-    publish_text: str,
-    max_units: int = 280,
-) -> str:
-    # 現行仕様では使わない（URL/title/publish_atを優先的に削るロジックを封印）
-    return raw
 
 def build_tweet_from_template(template_body: str, video: Video, snippet: str, max_units: int = 280) -> str:
     """
