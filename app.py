@@ -5,7 +5,6 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import List, Optional
 
-from zoneinfo import ZoneInfo
 import streamlit as st
 from streamlit.components.v1 import html
 from google.oauth2.credentials import Credentials
@@ -23,8 +22,6 @@ SCOPES = [
 ]
 SPREADSHEET_ID = "1t34GoYFFHJdCsIjvbSGLEfD7W-cfeDgyAQoh9_u-oUU"  # 共有シートID
 URL_UNITS = 24  # X(Twitter) URL固定長（安全側24）
-DEFAULT_TZ = "Asia/Tokyo"
-WEEKDAYS_JP = ["月", "火", "水", "木", "金", "土", "日"]
 
 # ==============================
 # データ構造
@@ -37,6 +34,7 @@ class Template:
     body: str
     is_default: bool = False
 
+
 @dataclass
 class Video:
     video_id: str
@@ -48,6 +46,7 @@ class Video:
     def url(self) -> str:
         return f"https://www.youtube.com/watch?v={self.video_id}"
 
+
 # ==============================
 # テキスト処理
 # ==============================
@@ -58,6 +57,7 @@ def count_units(text: str) -> int:
         w = unicodedata.east_asian_width(ch)
         total += 2 if w in ("F", "W", "A") else 1
     return total
+
 
 def truncate_to_limit(text: str, max_units: int = 280) -> str:
     """
@@ -76,6 +76,7 @@ def truncate_to_limit(text: str, max_units: int = 280) -> str:
         truncated += "…"
     return truncated
 
+
 def count_units_breakdown(text: str) -> tuple[int, int, int]:
     """
     本文ユニット, URLユニット(=URL_UNITS×本数), URL本数 を返す
@@ -89,46 +90,88 @@ def count_units_breakdown(text: str) -> tuple[int, int, int]:
     body_units += count_units(text[pos:])
     return body_units, URL_UNITS * url_count, url_count
 
+
 def extract_snippet(description: str, max_units: int = 200) -> str:
     """
-    概要欄をそのまま短く切り出す。
-    URL や # で始まる行も含めて、改行込みで保持したまま 200unit までに制限する。
+    概要欄からURL/見出し行を除いた短文を生成。
+    ツイート本文中で「概要欄由来として使ってよい予算」は 200unit までとする。
+    改行はそのまま保持して差し込む。
     """
-    normalized = description.replace("\r\n", "\n").replace("\r", "\n")
-    return truncate_to_limit(normalized, max_units=max_units)
+    lines = description.splitlines()
+    cleaned = []
+    for line in lines:
+        s = line.strip()
+        # 空行 / # 始まり / URL を含む行はスキップ
+        if not s or s.startswith("#") or re.search(r"https?://", s):
+            continue
+        cleaned.append(s)
+    # ここだけ 200unit 上限を適用（改行は "\n" で保持）
+    return truncate_to_limit("\n".join(cleaned), max_units=max_units)
 
-# ==============================
-# 日付フォーマット
-# ==============================
 
-def to_local(dt: datetime, tz_name: str = DEFAULT_TZ) -> datetime:
+def format_publish_at(dt: datetime, tz_name: str = "Asia/Tokyo") -> str:
     try:
-        return dt.astimezone(ZoneInfo(tz_name))
+        from zoneinfo import ZoneInfo
+        local = dt.astimezone(ZoneInfo(tz_name))
     except Exception:
-        return dt
-
-def format_publish_at(dt: datetime, tz_name: str = DEFAULT_TZ) -> str:
-    local = to_local(dt, tz_name)
+        local = dt
     return local.strftime("%Y/%m/%d %H:%M")
 
-def format_publish_at_with_weekday(dt: datetime, tz_name: str = DEFAULT_TZ) -> str:
+
+def format_publish_at_with_weekday(dt: datetime, tz_name: str = "Asia/Tokyo") -> str:
     """
     yyyy/mm/dd(曜) hh:mm 形式で返す。曜は日本語一文字。
     例: 2025/11/14(金) 21:00
     """
-    local = to_local(dt, tz_name)
-    wd = WEEKDAYS_JP[local.weekday()]
+    try:
+        from zoneinfo import ZoneInfo
+        local = dt.astimezone(ZoneInfo(tz_name))
+    except Exception:
+        local = dt
+    wd = ["月", "火", "水", "木", "金", "土", "日"][local.weekday()]
     date_str = local.strftime("%Y/%m/%d")
     time_str = local.strftime("%H:%M")
     return f"{date_str}({wd}) {time_str}"
 
-def format_publish_at_pretty(dt: datetime, tz_name: str = DEFAULT_TZ) -> str:
+
+def format_publish_at_pretty(dt: datetime, tz_name: str = "Asia/Tokyo") -> str:
     """
     m月d日(曜) 形式で返す。曜は日本語の一文字（例：水）。
     """
-    local = to_local(dt, tz_name)
-    wd = WEEKDAYS_JP[local.weekday()]
+    try:
+        from zoneinfo import ZoneInfo
+        local = dt.astimezone(ZoneInfo(tz_name))
+    except Exception:
+        local = dt
+    wd = ["月", "火", "水", "木", "金", "土", "日"][local.weekday()]
     return f"{local.month}月{local.day}日({wd})"
+
+
+# URL/title/publish_at は削らない仕様だが、汎用関数として残しておく
+def ensure_url_and_limit(text: str, url: str, max_units: int = 280) -> str:
+    if not url or url not in text:
+        return text if count_units(text) <= max_units else truncate_to_limit(text, max_units=max_units)
+    idx = text.rfind(url)
+    prefix = text[:idx]
+    if count_units(prefix) + URL_UNITS <= max_units:
+        return prefix + url
+    allowed = max_units - URL_UNITS
+    if allowed <= 0:
+        return url
+    return truncate_to_limit(prefix, max_units=allowed) + url
+
+
+def prioritize_and_fit(
+    raw: str,
+    url_text: str,
+    title_text: str,
+    snippet_text: str,
+    publish_text: str,
+    max_units: int = 280,
+) -> str:
+    # 現行仕様では使わない（URL/title/publish_atを優先的に削るロジックを封印）
+    return raw
+
 
 def build_tweet_from_template(template_body: str, video: Video, snippet: str, max_units: int = 280) -> str:
     """
@@ -149,6 +192,7 @@ def build_tweet_from_template(template_body: str, video: Video, snippet: str, ma
     )
     return raw
 
+
 # ==============================
 # Google OAuth
 # ==============================
@@ -165,6 +209,7 @@ def get_client_config() -> dict:
         }
     }
 
+
 def create_flow() -> Flow:
     flow = Flow.from_client_config(
         client_config=get_client_config(),
@@ -172,6 +217,7 @@ def create_flow() -> Flow:
         redirect_uri=st.secrets["google_oauth"]["redirect_uri"],
     )
     return flow
+
 
 def handle_oauth_callback():
     params = st.experimental_get_query_params()
@@ -186,6 +232,7 @@ def handle_oauth_callback():
     st.experimental_set_query_params()
     st.rerun()
 
+
 def start_google_oauth():
     flow = create_flow()
     auth_url, _ = flow.authorization_url(
@@ -195,6 +242,7 @@ def start_google_oauth():
     )
     st.markdown(f"[Googleアカウントで連携する]({auth_url})")
 
+
 def ensure_valid_creds(creds: Optional[Credentials]) -> Optional[Credentials]:
     if creds and creds.expired and creds.refresh_token:
         try:
@@ -203,6 +251,7 @@ def ensure_valid_creds(creds: Optional[Credentials]) -> Optional[Credentials]:
         except Exception:
             pass
     return creds
+
 
 # ==============================
 # YouTube API
@@ -373,6 +422,7 @@ def fetch_scheduled_videos(creds: Credentials) -> List[Video]:
     videos.sort(key=lambda v: v.publish_at_utc)
     return videos
 
+
 # ==============================
 # Google Sheets（テンプレ）
 # ==============================
@@ -392,6 +442,7 @@ def default_templates() -> List[Template]:
             is_default=False
         ),
     ]
+
 
 def load_templates_from_sheets(creds: Credentials) -> List[Template]:
     if not SPREADSHEET_ID:
@@ -415,6 +466,7 @@ def load_templates_from_sheets(creds: Credentials) -> List[Template]:
             out.append(Template(id=t_id, name=name, body=body, is_default=is_default))
     return out or default_templates()
 
+
 def save_templates_to_sheets(creds: Credentials, templates: List[Template]) -> None:
     if not SPREADSHEET_ID:
         return
@@ -432,6 +484,7 @@ def save_templates_to_sheets(creds: Credentials, templates: List[Template]) -> N
             valueInputOption="RAW",
             body={"values": values},
         ).execute()
+
 
 def append_template_to_sheets(creds: Credentials, template: Template) -> None:
     if not SPREADSHEET_ID:
@@ -451,6 +504,7 @@ def append_template_to_sheets(creds: Credentials, template: Template) -> None:
         ]]},
     ).execute()
 
+
 def next_template_id(existing: List[Template]) -> str:
     nums = []
     for t in existing:
@@ -460,6 +514,7 @@ def next_template_id(existing: List[Template]) -> str:
             pass
     return str(max(nums) + 1) if nums else uuid.uuid4().hex[:8]
 
+
 # ==============================
 # アプリ本体
 # ==============================
@@ -468,20 +523,8 @@ def main():
     st.set_page_config(page_title="予約投稿作成フォーム", layout="wide")
     st.title("📝 予約投稿作成フォーム（YouTube×X）")
 
-    # グローバルな余白調整（特に h4 の下マージンを詰める）
     st.markdown(
-        """
-        <style>
-        /* Expander 下の余白を少し詰める */
-        div[data-testid='stExpander'] {
-            margin-bottom: 0.75rem;
-        }
-        /* h4 見出しの下の余白を詰めて、次の要素との空行感を減らす */
-        .stMarkdown h4 {
-            margin-bottom: 0.25rem;
-        }
-        </style>
-        """,
+        "<style>div[data-testid='stExpander']{margin-bottom:0.75rem}</style>",
         unsafe_allow_html=True,
     )
 
@@ -601,7 +644,8 @@ def main():
         st.session_state["tmpl_editor_body"] = selected_template.body
         st.session_state["current_template_id"] = selected_template.id
 
-        snippet = extract_snippet(current_video.description)  # 概要由来は最大200unitまで（改行保持）
+        # 概要由来は最大200unitまで（改行保持）
+        snippet = extract_snippet(current_video.description)
         tweet = build_tweet_from_template(
             selected_template.body,
             current_video,
@@ -734,7 +778,8 @@ def main():
 
         st.markdown("---")
         if st.button("🌀 現在のテンプレを使用して再出力する↓"):
-            snippet = extract_snippet(current_video.description)  # 最大200unit 上限（改行保持）
+            # 最大200unit 上限（改行保持）
+            snippet = extract_snippet(current_video.description)
             tweet = build_tweet_from_template(
                 st.session_state["tmpl_editor_body"],
                 current_video,
@@ -769,19 +814,18 @@ def main():
         st.write(f"**公開予定日時：** {format_publish_at_with_weekday(current_video.publish_at_utc)}")
     st.write(f"**動画URL：** {current_video.url}")
 
-    # 見出しと「文字数カウント」ボタンを同じ行に横並び
+    # 見出しと「文字数カウント」ボタンを横並び
     col_label, col_count_btn = st.columns([4, 1])
     with col_label:
         st.markdown("#### ✏️ 投稿本文（ここで自由に編集できます）")
     with col_count_btn:
-        # 押した瞬間に再実行されるので、それ自体が「再カウント」トリガーになる
         st.button("文字数カウント")
 
-    # テキストエリア本体（見出し直下になる）
+    # テキストエリア本体
     tweet_text = st.text_area(
         label="",
         key="tweet_text",
-        height=280,
+        height=240,  # デフォルトの表示高さ（行数感を変えたい場合はここを調整）
     )
 
     # ヒント
@@ -822,6 +866,7 @@ def main():
         """,
         height=60,
     )
+
 
 if __name__ == "__main__":
     main()
