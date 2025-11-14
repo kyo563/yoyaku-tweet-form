@@ -814,27 +814,57 @@ def main():
         st.write(f"**公開予定日時：** {format_publish_at_with_weekday(current_video.publish_at_utc)}")
     st.write(f"**動画URL：** {current_video.url}")
 
-    # 見出しと「文字数カウント」ボタンを横並び
-    col_label, col_count_btn = st.columns([4, 1])
-    with col_label:
-        st.markdown("#### ✏️ 投稿本文（ここで自由に編集できます）")
-    with col_count_btn:
-        st.button("文字数カウント")
+    # 見出し
+    st.markdown("#### ✏️ 投稿本文（ここで自由に編集できます）")
+
+    # クリップボード用に、現時点の tweet_text をエスケープ（セッションから取得）
+    current_text_for_copy = st.session_state.get("tweet_text", "") or ""
+    safe_text = (
+        current_text_for_copy
+        .replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("'", "\\'")
+        .replace("\n", "\\n")
+    )
+
+    # 「文字数カウント」「クリップボードにコピー」を同じスタイルで横並び表示
+    buttons_html = f"""
+    <div style="margin: 0.25rem 0 0.5rem 0; display: flex; flex-wrap: wrap; gap: 8px;">
+      <button
+        type="button"
+        style="padding:8px 14px;border-radius:8px;border:1px solid #aaa;
+               cursor:pointer;background-color:#f5f5f5;color:#333;
+               font-size:14px;line-height:1.3;"
+      >
+        文字数カウント
+      </button>
+      <button
+        type="button"
+        style="padding:8px 14px;border-radius:8px;border:1px solid #aaa;
+               cursor:pointer;background-color:#f5f5f5;color:#333;
+               font-size:14px;line-height:1.3;"
+        onclick='navigator.clipboard.writeText("{safe_text}")'
+      >
+        クリップボードにコピー
+      </button>
+    </div>
+    """
+    html(buttons_html, height=70)
 
     # テキストエリア本体
     tweet_text = st.text_area(
         label="",
         key="tweet_text",
-        height=240,  # デフォルトの表示高さ（行数感を変えたい場合はここを調整）
+        height=240,  # デフォルトの表示高さ（ここを変えれば行数感を調整可能）
     )
 
     # ヒント
-    st.caption("「文字数カウント」ボタンを押すと、現在の本文の文字数を再計算します。")
+    st.caption("本文を編集すると文字数カウントは自動で更新されます。必要に応じて「文字数カウント」ボタンを押して確認してください。")
 
     # 曜日付きのフォーマットで表示
     st.info(f"⏰ この動画の公開予定日時： {format_publish_at_with_weekday(current_video.publish_at_utc)}")
 
-    # 文字数カウント（ボタンを押しても押さなくても、常に最新値を表示）
+    # 文字数カウント（常に最新値を表示）
     body_units, url_units, url_count = count_units_breakdown(tweet_text or "")
     total_units = body_units + url_units
     if total_units > 280:
@@ -846,26 +876,7 @@ def main():
             f"現在 **{total_units}字（本文{body_units}字 + URL{url_units}字）** ／ 280字"
         )
 
-    # コピー
-    safe_text = (tweet_text or "")
-    safe_text = (
-        safe_text.replace("\\", "\\\\")
-        .replace('"', '\\"')
-        .replace("'", "\\'")
-        .replace("\n", "\\n")
-    )
-    html(
-        f"""
-        <div style="margin: 0.5rem 0 1rem 0;">
-          <button
-            style="padding:8px 14px;border-radius:8px;border:1px solid #aaa;cursor:pointer;"
-            onclick='navigator.clipboard.writeText("{safe_text}")'>
-            クリップボードにコピー
-          </button>
-        </div>
-        """,
-        height=60,
-    )
+    # （コピー用ボタンは上で統一スタイルとして表示済み）
 
 
 if __name__ == "__main__":
