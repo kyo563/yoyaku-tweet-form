@@ -562,18 +562,16 @@ def main():
     # ② 予約動画の取得と対象動画・テンプレ選択（メイン上部）
     st.subheader("② 対象動画とテンプレートの選択")
 
-    c1, c2 = st.columns([1, 1])
-
-    with c1:
-        if st.button("自分のチャンネルの予約動画リストを取得／更新"):
-            try:
-                st.session_state["videos"] = fetch_scheduled_videos(creds)
-                if st.session_state["videos"]:
-                    st.success(f"{len(st.session_state['videos'])} 件の予約投稿／配信予定動画を取得しました。")
-                else:
-                    st.warning("予約投稿中／配信予定の動画が見つかりませんでした。")
-            except Exception as e:
-                st.error(f"予約動画の取得に失敗しました：{e}")
+    # 1行目：ボタンのみ
+    if st.button("自分のチャンネルの予約動画リストを取得／更新"):
+        try:
+            st.session_state["videos"] = fetch_scheduled_videos(creds)
+            if st.session_state["videos"]:
+                st.success(f"{len(st.session_state['videos'])} 件の予約投稿／配信予定動画を取得しました。")
+            else:
+                st.warning("予約投稿中／配信予定の動画が見つかりませんでした。")
+        except Exception as e:
+            st.error(f"予約動画の取得に失敗しました：{e}")
 
     videos: List[Video] = st.session_state["videos"]
 
@@ -581,7 +579,10 @@ def main():
         st.info("「自分のチャンネルの予約動画リストを取得／更新」ボタンで予約動画リストを取得してください。")
         return
 
-    with c1:
+    # 2行目：動画選択とテンプレ選択を横並び
+    col_video_select, col_tmpl_select = st.columns([1, 1])
+
+    with col_video_select:
         video_options = {
             f"{v.title} / {format_publish_at(v.publish_at_utc)}": v.video_id
             for v in videos
@@ -594,7 +595,7 @@ def main():
             v for v in videos if v.video_id == video_options[selected_label]
         )
 
-    with c2:
+    with col_tmpl_select:
         tmpl_map = {t.name: t.id for t in templates}
         selected_tmpl_label = st.selectbox(
             "テンプレ（ツイートの型）を選んでください",
@@ -638,8 +639,13 @@ def main():
 
     st.subheader("③ 　告知文を作成する")
 
-    st.write(f"**動画タイトル：** {current_video.title}")
-    st.write(f"**公開予定日時：** {format_publish_at(current_video.publish_at_utc)}")
+    # タイトルと公開予定日時を横並び
+    col_title, col_time = st.columns([3, 2])
+    with col_title:
+        st.write(f"**動画タイトル：** {current_video.title}")
+    with col_time:
+        st.write(f"**公開予定日時：** {format_publish_at_with_weekday(current_video.publish_at_utc)}")
+
     st.write(f"**動画URL：** {current_video.url}")
 
     # 概要欄（全文をプレビュー）
@@ -681,8 +687,8 @@ def main():
             st.session_state["tmpl_editor_body"] = t.body
             st.session_state["current_template_id"] = t.id
 
-        ed_name = st.text_input("テンプレ名", key="tmpl_editor_name")
-        ed_body = st.text_area("テンプレ本文", key="tmpl_editor_body", height=160)
+        ed_name = st.text_input("テンプレ名をつける", key="tmpl_editor_name")
+        ed_body = st.text_area("テンプレ本文(編集用)", key="tmpl_editor_body", height=160)
 
         c1_btn, c2_btn, c3_btn = st.columns(3)
         with c1_btn:
@@ -773,12 +779,16 @@ def main():
     # ===== ツイート本文 =====
 
     # ここで再度、確認用にタイトルとURLを表示
-    st.markdown("#### 告知文作成")
-    st.write(f"**動画タイトル：** {current_video.title}")
+    st.markdown("#### 対象動画（確認用）")
+    col_conf_title, col_conf_time = st.columns([3, 2])
+    with col_conf_title:
+        st.write(f"**動画タイトル：** {current_video.title}")
+    with col_conf_time:
+        st.write(f"**公開予定日時：** {format_publish_at_with_weekday(current_video.publish_at_utc)}")
     st.write(f"**動画URL：** {current_video.url}")
 
     tweet_text = st.text_area(
-        "✏️ 投稿本文（ここで自由に編集できます。作成後、「下のクリップボードにコピー」を押して作成完了です）",
+        "✏️ 投稿本文（ここで自由に編集できます）",
         key="tweet_text",
         height=240,
     )
