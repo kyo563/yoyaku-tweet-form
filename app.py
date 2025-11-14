@@ -468,8 +468,20 @@ def main():
     st.set_page_config(page_title="予約投稿作成フォーム", layout="wide")
     st.title("📝 予約投稿作成フォーム（YouTube×X）")
 
+    # グローバルな余白調整（特に h4 の下マージンを詰める）
     st.markdown(
-        "<style>div[data-testid='stExpander']{margin-bottom:0.75rem}</style>",
+        """
+        <style>
+        /* Expander 下の余白を少し詰める */
+        div[data-testid='stExpander'] {
+            margin-bottom: 0.75rem;
+        }
+        /* h4 見出しの下の余白を詰めて、次の要素との空行感を減らす */
+        .stMarkdown h4 {
+            margin-bottom: 0.25rem;
+        }
+        </style>
+        """,
         unsafe_allow_html=True,
     )
 
@@ -765,7 +777,7 @@ def main():
         # 押した瞬間に再実行されるので、それ自体が「再カウント」トリガーになる
         st.button("文字数カウント")
 
-    # テキストエリア本体
+    # テキストエリア本体（見出し直下になる）
     tweet_text = st.text_area(
         label="",
         key="tweet_text",
