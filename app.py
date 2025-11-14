@@ -781,7 +781,7 @@ def main():
     tweet_text = st.text_area(
         label="",
         key="tweet_text",
-        height=240,
+        height=280,
     )
 
     # ヒント
