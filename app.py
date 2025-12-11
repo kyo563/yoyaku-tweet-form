@@ -2,7 +2,7 @@ import re
 import unicodedata
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import List, Optional
 
 import streamlit as st
@@ -543,6 +543,7 @@ def main():
     # 選択状態の記録（自動更新用）
     st.session_state.setdefault("prev_selected_video_id", None)
     st.session_state.setdefault("prev_selected_template_id", None)
+    st.session_state.setdefault("plus5_enabled", True)        # ⏰ +5分スイッチ（デフォルトON）
 
     creds: Optional[Credentials] = st.session_state["google_creds"]
 
@@ -571,6 +572,7 @@ def main():
                     "current_template_id",
                     "prev_selected_video_id",
                     "prev_selected_template_id",
+                    "plus5_enabled",
                 ]:
                     st.session_state.pop(k, None)
                 st.rerun()
@@ -816,18 +818,32 @@ def main():
 
     # 見出し
     st.markdown("#### ✏️ 投稿本文（ここで自由に編集できます）")
-    # 説明文（ご指定の文言）
+    # 説明文
     st.caption("CTRL+Enter、カウントボタンで最新の文字数を再計算")
 
-    # テキストエリア本体（編集用）
-    tweet_text = st.text_area(
-        label="",
-        key="tweet_text",
-        height=240,  # デフォルトの表示高さ
-    )
+    # テキストエリア本体 + [+5分スイッチ] を横並びに配置
+    col_text, col_switch = st.columns([4, 1])
+    with col_text:
+        tweet_text = st.text_area(
+            label="",
+            key="tweet_text",
+            height=240,
+        )
+    with col_switch:
+        st.checkbox(
+            "[+5分スイッチ]",
+            key="plus5_enabled",
+            value=st.session_state.get("plus5_enabled", True),
+        )
+
+    # [+5分スイッチ] の状態に応じて表示用の時刻を決定
+    if st.session_state.get("plus5_enabled", True):
+        display_dt = current_video.publish_at_utc + timedelta(minutes=5)
+    else:
+        display_dt = current_video.publish_at_utc
 
     # 曜日付きのフォーマットで表示
-    st.info(f"⏰ この動画の公開予定日時： {format_publish_at_with_weekday(current_video.publish_at_utc)}")
+    st.info(f"⏰ この動画の公開予定日時： {format_publish_at_with_weekday(display_dt)}")
 
     # 文字数カウント（常に最新値を表示）
     body_units, url_units, url_count = count_units_breakdown(tweet_text or "")
