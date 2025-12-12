@@ -21,7 +21,9 @@ SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
 ]
 SPREADSHEET_ID = "1t34GoYFFHJdCsIjvbSGLEfD7W-cfeDgyAQoh9_u-oUU"  # 共有シートID
-URL_UNITS = 24  # X(Twitter) URL固定長（安全側24）
+
+# X(Twitter) のURL換算は https の場合 23 文字（公式仕様）
+URL_UNITS = 23
 
 # ==============================
 # データ構造
@@ -43,8 +45,19 @@ class Video:
     publish_at_utc: datetime
 
     @property
+    def normal_url(self) -> str:
+        # 通常動画共有リンク寄せ（?si=無し）
+        return f"https://youtu.be/{self.video_id}"
+
+    @property
+    def shorts_url(self) -> str:
+        # Shorts共有リンク寄せ（?si=無し）
+        return f"https://youtube.com/shorts/{self.video_id}"
+
+    @property
     def url(self) -> str:
-        return f"https://www.youtube.com/watch?v={self.video_id}"
+        # 既存互換：{url} は通常動画URLに寄せる
+        return self.normal_url
 
 
 # ==============================
@@ -179,16 +192,21 @@ def build_tweet_from_template(template_body: str, video: Video, snippet: str, ma
     {url} / {title} / {publish_at} は常に全文を挿入し、
     {snippet} は extract_snippet 側で 200unit 以内に調整済みとする。
     280unit を超えてもここでは削らない（カウンタで警告のみ）。
+    追加: {URL}（通常動画用） / {SHORTS}（ショート用）
     """
     publish_at_pretty = format_publish_at_pretty(video.publish_at_utc)
-    url = video.url
-    title = video.title
 
     raw = template_body.format(
-        title=title,
-        url=url,
+        title=video.title,
         snippet=snippet,
         publish_at=publish_at_pretty,
+
+        # 既存互換（小文字urlは通常URL）
+        url=video.normal_url,
+
+        # 新規（要望の2種類）
+        URL=video.normal_url,
+        SHORTS=video.shorts_url,
     )
     return raw
 
@@ -432,13 +450,19 @@ def default_templates() -> List[Template]:
         Template(
             id="1",
             name="シンプルなお知らせ",
-            body="【新着】{title}\n\n{snippet}\n\n▼動画はこちら\n{url}",
+            body="【新着】{title}\n\n{snippet}\n\n▼動画はこちら\n{URL}",
             is_default=True
         ),
         Template(
             id="2",
             name="丁寧めなお知らせ",
-            body="本日 {publish_at} に動画を公開予定です。\n\n{snippet}\n\n{url}",
+            body="本日 {publish_at} に動画を公開予定です。\n\n{snippet}\n\n{URL}",
+            is_default=False
+        ),
+        Template(
+            id="3",
+            name="ショート用（/shorts）",
+            body="【Shorts】{title}\n\n{snippet}\n\n▼動画はこちら\n{SHORTS}",
             is_default=False
         ),
     ]
@@ -674,7 +698,8 @@ def main():
     with col_time:
         st.write(f"**公開予定日時：** {format_publish_at_with_weekday(current_video.publish_at_utc)}")
 
-    st.write(f"**動画URL：** {current_video.url}")
+    st.write(f"**通常URL（{ '{URL}' }）：** {current_video.normal_url}")
+    st.write(f"**ショートURL（{ '{SHORTS}' }）：** {current_video.shorts_url}")
 
     # 概要欄（全文をプレビュー）
     with st.expander("概要欄を確認する"):
@@ -799,11 +824,17 @@ def main():
             st.markdown("**概要（冒頭200文字相当・改行保持）**")
             st.code("{snippet}", language=None)
 
-            st.markdown("**動画URL**（YouTubeの動画URLが入ります。URLは24文字換算）")
-            st.code("{url}", language=None)
-
             st.markdown("**予約済みの公開日時**（m月d日(曜) 形式で入ります。例：11月12日(水)）")
             st.code("{publish_at}", language=None)
+
+            st.markdown("**通常動画共有URL（youtu.be / ?si=無し）**")
+            st.code("{URL}", language=None)
+
+            st.markdown("**ショート共有URL（/shorts / ?si=無し）**")
+            st.code("{SHORTS}", language=None)
+
+            st.markdown("**互換用URL（従来キー。{URL} と同じ値）**")
+            st.code("{url}", language=None)
 
     # ===== ツイート本文 =====
 
@@ -814,7 +845,8 @@ def main():
         st.write(f"**動画タイトル：** {current_video.title}")
     with col_conf_time:
         st.write(f"**公開予定日時：** {format_publish_at_with_weekday(current_video.publish_at_utc)}")
-    st.write(f"**動画URL：** {current_video.url}")
+    st.write(f"**通常URL：** {current_video.normal_url}")
+    st.write(f"**ショートURL：** {current_video.shorts_url}")
 
     # 見出し
     st.markdown("#### ✏️ 投稿本文（ここで自由に編集できます）")
