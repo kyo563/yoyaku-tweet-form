@@ -46,18 +46,8 @@ class Video:
 
     @property
     def normal_url(self) -> str:
-        # youtu.be に統一（?si=無し）
+        # 生成URLはすべて youtu.be に統一（?si=無し）
         return f"https://youtu.be/{self.video_id}"
-
-    @property
-    def shorts_url(self) -> str:
-        # Shortsも youtu.be に統一（?si=無し）
-        return f"https://youtu.be/{self.video_id}"
-
-    @property
-    def url(self) -> str:
-        # 既存互換：{url} は通常動画URLに寄せる
-        return self.normal_url
 
 
 # ==============================
@@ -186,28 +176,35 @@ def prioritize_and_fit(
     return raw
 
 
+def sanitize_template_body(template_body: str) -> str:
+    """
+    {SHORTS} / {url} は廃止。
+    既存テンプレ互換のため、読み込み/生成時に {URL} へ自動変換する。
+    """
+    if not template_body:
+        return template_body
+    return (
+        template_body
+        .replace("{SHORTS}", "{URL}")
+        .replace("{url}", "{URL}")
+    )
+
+
 def build_tweet_from_template(template_body: str, video: Video, snippet: str, max_units: int = 280) -> str:
     """
     テンプレに差し込み後、そのまま返す。
-    {url} / {title} / {publish_at} は常に全文を挿入し、
-    {snippet} は extract_snippet 側で 200unit 以内に調整済みとする。
-    280unit を超えてもここでは削らない（カウンタで警告のみ）。
-    追加: {URL}（通常動画用） / {SHORTS}（ショート用）
-    ※ただし要件により両方とも youtu.be 形式へ統一する
+    {title} / {snippet} / {publish_at} / {URL} のみを正式サポートする。
+    {SHORTS} / {url} は混乱回避のため廃止し、内部で {URL} に自動変換して互換だけ維持する。
     """
     publish_at_pretty = format_publish_at_pretty(video.publish_at_utc)
 
-    raw = template_body.format(
+    body = sanitize_template_body(template_body)
+
+    raw = body.format(
         title=video.title,
         snippet=snippet,
         publish_at=publish_at_pretty,
-
-        # 既存互換（小文字urlは通常URL）
-        url=video.normal_url,
-
-        # 新規（要望の2種類）
         URL=video.normal_url,
-        SHORTS=video.shorts_url,
     )
     return raw
 
@@ -310,7 +307,7 @@ def fetch_scheduled_videos(creds: Credentials) -> List[Video]:
     uploads_playlist_id = items[0]["contentDetails"]["relatedPlaylists"]["uploads"]
 
     # ==============================
-    # 1) 予約投稿動画（通常動画/ショート）
+    # 1) 予約投稿動画（通常動画/ショート含む）
     # ==============================
     video_ids: List[str] = []
     page_token = None
@@ -460,12 +457,6 @@ def default_templates() -> List[Template]:
             body="本日 {publish_at} に動画を公開予定です。\n\n{snippet}\n\n{URL}",
             is_default=False
         ),
-        Template(
-            id="3",
-            name="ショート用（youtu.be統一）",
-            body="【Shorts】{title}\n\n{snippet}\n\n▼動画はこちら\n{SHORTS}",
-            is_default=False
-        ),
     ]
 
 
@@ -481,6 +472,7 @@ def load_templates_from_sheets(creds: Credentials) -> List[Template]:
     values = result.get("values", [])
     if not values:
         return default_templates()
+
     out: List[Template] = []
     for row in values:
         t_id = row[0] if len(row) > 0 else ""
@@ -488,7 +480,9 @@ def load_templates_from_sheets(creds: Credentials) -> List[Template]:
         body = row[2] if len(row) > 2 else ""
         is_default = (str(row[3]).upper() == "TRUE") if len(row) > 3 else False
         if t_id and name and body:
+            # 旧キーを内部変換（表示は変えない＝ユーザーが編集で直せる）
             out.append(Template(id=t_id, name=name, body=body, is_default=is_default))
+
     return out or default_templates()
 
 
@@ -699,8 +693,7 @@ def main():
     with col_time:
         st.write(f"**公開予定日時：** {format_publish_at_with_weekday(current_video.publish_at_utc)}")
 
-    st.write(f"**通常URL（{ '{URL}' }）：** {current_video.normal_url}")
-    st.write(f"**ショートURL（{ '{SHORTS}' }）：** {current_video.shorts_url}")
+    st.write(f"**共有URL（{ '{URL}' }）：** {current_video.normal_url}")
 
     # 概要欄（全文をプレビュー）
     with st.expander("概要欄を確認する"):
@@ -828,14 +821,10 @@ def main():
             st.markdown("**予約済みの公開日時**（m月d日(曜) 形式で入ります。例：11月12日(水)）")
             st.code("{publish_at}", language=None)
 
-            st.markdown("**通常動画共有URL（youtu.be / ?si=無し）**")
+            st.markdown("**共有URL（youtu.be / ?si=無し）**")
             st.code("{URL}", language=None)
 
-            st.markdown("**ショート共有URL（youtu.be / ?si=無し / Shortsも統一）**")
-            st.code("{SHORTS}", language=None)
-
-            st.markdown("**互換用URL（従来キー。{URL} と同じ値）**")
-            st.code("{url}", language=None)
+            st.caption("※旧テンプレの {SHORTS} / {url} は内部で {URL} に自動変換して生成します。")
 
     # ===== ツイート本文 =====
 
@@ -846,8 +835,7 @@ def main():
         st.write(f"**動画タイトル：** {current_video.title}")
     with col_conf_time:
         st.write(f"**公開予定日時：** {format_publish_at_with_weekday(current_video.publish_at_utc)}")
-    st.write(f"**通常URL：** {current_video.normal_url}")
-    st.write(f"**ショートURL：** {current_video.shorts_url}")
+    st.write(f"**共有URL：** {current_video.normal_url}")
 
     # 見出し
     st.markdown("#### ✏️ 投稿本文（ここで自由に編集できます）")
