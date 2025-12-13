@@ -46,13 +46,13 @@ class Video:
 
     @property
     def normal_url(self) -> str:
-        # 通常動画共有リンク寄せ（?si=無し）
+        # youtu.be に統一（?si=無し）
         return f"https://youtu.be/{self.video_id}"
 
     @property
     def shorts_url(self) -> str:
-        # Shorts共有リンク寄せ（?si=無し）
-        return f"https://youtube.com/shorts/{self.video_id}"
+        # Shortsも youtu.be に統一（?si=無し）
+        return f"https://youtu.be/{self.video_id}"
 
     @property
     def url(self) -> str:
@@ -193,6 +193,7 @@ def build_tweet_from_template(template_body: str, video: Video, snippet: str, ma
     {snippet} は extract_snippet 側で 200unit 以内に調整済みとする。
     280unit を超えてもここでは削らない（カウンタで警告のみ）。
     追加: {URL}（通常動画用） / {SHORTS}（ショート用）
+    ※ただし要件により両方とも youtu.be 形式へ統一する
     """
     publish_at_pretty = format_publish_at_pretty(video.publish_at_utc)
 
@@ -461,7 +462,7 @@ def default_templates() -> List[Template]:
         ),
         Template(
             id="3",
-            name="ショート用（/shorts）",
+            name="ショート用（youtu.be統一）",
             body="【Shorts】{title}\n\n{snippet}\n\n▼動画はこちら\n{SHORTS}",
             is_default=False
         ),
@@ -830,7 +831,7 @@ def main():
             st.markdown("**通常動画共有URL（youtu.be / ?si=無し）**")
             st.code("{URL}", language=None)
 
-            st.markdown("**ショート共有URL（/shorts / ?si=無し）**")
+            st.markdown("**ショート共有URL（youtu.be / ?si=無し / Shortsも統一）**")
             st.code("{SHORTS}", language=None)
 
             st.markdown("**互換用URL（従来キー。{URL} と同じ値）**")
