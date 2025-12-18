@@ -1,52 +1,216 @@
 import re
 import unicodedata
+import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from datetime import datetime, timezone, timedelta
+from typing import List, Optional
 
-import pandas as pd
 import streamlit as st
+from streamlit.components.v1 import html
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
-from googleapiclient.errors import HttpError
 from google.auth.transport.requests import Request as GoogleAuthRequest
 
 # ==============================
 # 設定
 # ==============================
 
-# YouTube コメント取得に必要なのは youtube.readonly だけです
 SCOPES = [
     "https://www.googleapis.com/auth/youtube.readonly",
+    "https://www.googleapis.com/auth/spreadsheets",
 ]
+SPREADSHEET_ID = "1t34GoYFFHJdCsIjvbSGLEfD7W-cfeDgyAQoh9_u-oUU"  # 共有シートID
 
-DEFAULT_TZ = "Asia/Tokyo"
-
-# ここが「合流地点」です（既存ジェネレーターの貼り付け欄 key と同じにしてください）
-TS_TEXT_KEY = "timestamp_text"
-
-# 時刻行の検出（mm:ss / h:mm:ss / hh:mm:ss も許容）
-TIME_LINE_RE = re.compile(r"^\s*(?:(\d{1,2}):)?(\d{1,2}):(\d{2})\s*(.*)$")
+# X(Twitter) のURL換算は https の場合 23 文字（公式仕様）
+URL_UNITS = 23
 
 # ==============================
 # データ構造
 # ==============================
 
 @dataclass
-class VideoMeta:
+class Template:
+    id: str
+    name: str
+    body: str
+    is_default: bool = False
+
+
+@dataclass
+class Video:
     video_id: str
     title: str
     description: str
     publish_at_utc: datetime
 
     @property
-    def url(self) -> str:
+    def normal_url(self) -> str:
+        # 生成URLはすべて youtu.be に統一（?si=無し）
         return f"https://youtu.be/{self.video_id}"
 
 
 # ==============================
-# OAuth
+# テキスト処理
+# ==============================
+
+def count_units(text: str) -> int:
+    total = 0
+    for ch in text:
+        w = unicodedata.east_asian_width(ch)
+        total += 2 if w in ("F", "W", "A") else 1
+    return total
+
+
+def truncate_to_limit(text: str, max_units: int = 280) -> str:
+    """
+    汎用トリム関数。デフォルトはツイート上限の 280unit。
+    snippet 用など、別上限をかけたい場合は引数で上書きする。
+    """
+    result_chars, length = [], 0
+    for ch in text:
+        add = 2 if unicodedata.east_asian_width(ch) in ("F", "W", "A") else 1
+        if length + add > max_units:
+            break
+        result_chars.append(ch)
+        length += add
+    truncated = "".join(result_chars)
+    if truncated != text:
+        truncated += "…"
+    return truncated
+
+
+def count_units_breakdown(text: str) -> tuple[int, int, int]:
+    """
+    本文ユニット, URLユニット(=URL_UNITS×本数), URL本数 を返す
+    """
+    url_pattern = re.compile(r"https?://\S+")
+    body_units, url_count, pos = 0, 0, 0
+    for m in url_pattern.finditer(text):
+        body_units += count_units(text[pos:m.start()])
+        url_count += 1
+        pos = m.end()
+    body_units += count_units(text[pos:])
+    return body_units, URL_UNITS * url_count, url_count
+
+
+def extract_snippet(description: str, max_units: int = 200) -> str:
+    """
+    概要欄からURL/見出し行を除いた短文を生成。
+    ツイート本文中で「概要欄由来として使ってよい予算」は 200unit までとする。
+    改行はそのまま保持して差し込む。
+    """
+    lines = description.splitlines()
+    cleaned = []
+    for line in lines:
+        s = line.strip()
+        # 空行 / # 始まり / URL を含む行はスキップ
+        if not s or s.startswith("#") or re.search(r"https?://", s):
+            continue
+        cleaned.append(s)
+    # ここだけ 200unit 上限を適用（改行は "\n" で保持）
+    return truncate_to_limit("\n".join(cleaned), max_units=max_units)
+
+
+def format_publish_at(dt: datetime, tz_name: str = "Asia/Tokyo") -> str:
+    try:
+        from zoneinfo import ZoneInfo
+        local = dt.astimezone(ZoneInfo(tz_name))
+    except Exception:
+        local = dt
+    return local.strftime("%Y/%m/%d %H:%M")
+
+
+def format_publish_at_with_weekday(dt: datetime, tz_name: str = "Asia/Tokyo") -> str:
+    """
+    yyyy/mm/dd(曜) hh:mm 形式で返す。曜は日本語一文字。
+    例: 2025/11/14(金) 21:00
+    """
+    try:
+        from zoneinfo import ZoneInfo
+        local = dt.astimezone(ZoneInfo(tz_name))
+    except Exception:
+        local = dt
+    wd = ["月", "火", "水", "木", "金", "土", "日"][local.weekday()]
+    date_str = local.strftime("%Y/%m/%d")
+    time_str = local.strftime("%H:%M")
+    return f"{date_str}({wd}) {time_str}"
+
+
+def format_publish_at_pretty(dt: datetime, tz_name: str = "Asia/Tokyo") -> str:
+    """
+    m月d日(曜) 形式で返す。曜は日本語の一文字（例：水）。
+    """
+    try:
+        from zoneinfo import ZoneInfo
+        local = dt.astimezone(ZoneInfo(tz_name))
+    except Exception:
+        local = dt
+    wd = ["月", "火", "水", "木", "金", "土", "日"][local.weekday()]
+    return f"{local.month}月{local.day}日({wd})"
+
+
+# URL/title/publish_at は削らない仕様だが、汎用関数として残しておく
+def ensure_url_and_limit(text: str, url: str, max_units: int = 280) -> str:
+    if not url or url not in text:
+        return text if count_units(text) <= max_units else truncate_to_limit(text, max_units=max_units)
+    idx = text.rfind(url)
+    prefix = text[:idx]
+    if count_units(prefix) + URL_UNITS <= max_units:
+        return prefix + url
+    allowed = max_units - URL_UNITS
+    if allowed <= 0:
+        return url
+    return truncate_to_limit(prefix, max_units=allowed) + url
+
+
+def prioritize_and_fit(
+    raw: str,
+    url_text: str,
+    title_text: str,
+    snippet_text: str,
+    publish_text: str,
+    max_units: int = 280,
+) -> str:
+    # 現行仕様では使わない（URL/title/publish_atを優先的に削るロジックを封印）
+    return raw
+
+
+def sanitize_template_body(template_body: str) -> str:
+    """
+    {SHORTS} / {url} は廃止。
+    既存テンプレ互換のため、読み込み/生成時に {URL} へ自動変換する。
+    """
+    if not template_body:
+        return template_body
+    return (
+        template_body
+        .replace("{SHORTS}", "{URL}")
+        .replace("{url}", "{URL}")
+    )
+
+
+def build_tweet_from_template(template_body: str, video: Video, snippet: str, max_units: int = 280) -> str:
+    """
+    テンプレに差し込み後、そのまま返す。
+    {title} / {snippet} / {publish_at} / {URL} のみを正式サポートする。
+    {SHORTS} / {url} は混乱回避のため廃止し、内部で {URL} に自動変換して互換だけ維持する。
+    """
+    publish_at_pretty = format_publish_at_pretty(video.publish_at_utc)
+
+    body = sanitize_template_body(template_body)
+
+    raw = body.format(
+        title=video.title,
+        snippet=snippet,
+        publish_at=publish_at_pretty,
+        URL=video.normal_url,
+    )
+    return raw
+
+
+# ==============================
+# Google OAuth
 # ==============================
 
 def get_client_config() -> dict:
@@ -71,24 +235,21 @@ def create_flow() -> Flow:
     return flow
 
 
-def handle_oauth_callback() -> None:
+def handle_oauth_callback():
     params = st.experimental_get_query_params()
     if "code" not in params:
         return
     code = params.get("code", [None])[0]
     if not code:
         return
-
     flow = create_flow()
     flow.fetch_token(code=code)
     st.session_state["google_creds"] = flow.credentials
-
-    # URLのクエリを消して再描画
     st.experimental_set_query_params()
     st.rerun()
 
 
-def start_google_oauth() -> None:
+def start_google_oauth():
     flow = create_flow()
     auth_url, _ = flow.authorization_url(
         access_type="offline",
@@ -109,463 +270,645 @@ def ensure_valid_creds(creds: Optional[Credentials]) -> Optional[Credentials]:
 
 
 # ==============================
-# YouTube API（動画情報・コメント）
+# YouTube API
 # ==============================
 
-def extract_video_id_from_url(url: str) -> Optional[str]:
-    if not url:
-        return None
-    s = url.strip()
+def fetch_scheduled_videos(creds: Credentials) -> List[Video]:
+    """
+    予約投稿の通常動画/ショート ＋
+    公開済みかつ配信前のライブ配信（ライブ枠）をまとめて取得する。
 
-    # 生ID（11文字）っぽければそのまま
-    if re.fullmatch(r"[A-Za-z0-9_-]{11}", s):
-        return s
-
-    m = re.search(r"youtu\.be/([A-Za-z0-9_-]{11})", s)
-    if m:
-        return m.group(1)
-
-    m = re.search(r"[?&]v=([A-Za-z0-9_-]{11})", s)
-    if m:
-        return m.group(1)
-
-    m = re.search(r"/shorts/([A-Za-z0-9_-]{11})", s)
-    if m:
-        return m.group(1)
-
-    m = re.search(r"/live/([A-Za-z0-9_-]{11})", s)
-    if m:
-        return m.group(1)
-
-    return None
-
-
-def get_my_channel_id(creds: Credentials) -> Optional[str]:
+    - 予約投稿動画:
+        status.publishAt があり、
+        privacyStatus == "private" かつ publishAt が現在より未来のもの
+    - ライブ枠:
+        search.list(eventType="upcoming", type="video", channelId=...) で videoId を取得し、
+        videos.list(..., part="snippet,liveStreamingDetails,status") で
+        liveStreamingDetails.scheduledStartTime が現在より未来、
+        かつ privacyStatus が "public" または "unlisted" のもの。
+    """
     creds = ensure_valid_creds(creds)
     youtube = build("youtube", "v3", credentials=creds)
-    try:
-        resp = youtube.channels().list(part="id", mine=True).execute()
-        items = resp.get("items", [])
-        if not items:
-            return None
-        return items[0].get("id")
-    except Exception:
-        return None
+    now = datetime.now(timezone.utc)
 
+    videos_uploads: List[Video] = []
+    videos_lives: List[Video] = []
 
-def fetch_video_meta(creds: Credentials, video_id: str) -> Optional[VideoMeta]:
-    creds = ensure_valid_creds(creds)
-    youtube = build("youtube", "v3", credentials=creds)
-
-    try:
-        resp = youtube.videos().list(
-            part="snippet,liveStreamingDetails,status",
-            id=video_id,
-        ).execute()
-    except HttpError:
-        return None
-
-    items = resp.get("items", [])
+    # 自チャンネルの uploads プレイリストID と channelId を取得
+    channels_resp = youtube.channels().list(
+        part="id,contentDetails",
+        mine=True,
+    ).execute()
+    items = channels_resp.get("items", [])
     if not items:
-        return None
+        return []
 
-    item = items[0]
-    snip = item.get("snippet", {}) or {}
-    lsd = item.get("liveStreamingDetails", {}) or {}
-    status = item.get("status", {}) or {}
+    channel_id = items[0]["id"]
+    uploads_playlist_id = items[0]["contentDetails"]["relatedPlaylists"]["uploads"]
 
-    # ライブ枠は scheduledStartTime を優先、それ以外は status.publishAt → snippet.publishedAt の順
-    dt_str = lsd.get("scheduledStartTime") or status.get("publishAt") or snip.get("publishedAt")
-    if dt_str:
-        try:
-            publish_dt = datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
-        except Exception:
-            publish_dt = datetime.now(timezone.utc)
-    else:
-        publish_dt = datetime.now(timezone.utc)
-
-    return VideoMeta(
-        video_id=video_id,
-        title=snip.get("title", ""),
-        description=snip.get("description", ""),
-        publish_at_utc=publish_dt,
-    )
-
-
-def score_ts_comment(text: str, is_owner: bool, like_count: int) -> Tuple[int, int]:
-    """
-    スコア, ts_lines を返します
-    """
-    if not text:
-        return 0, 0
-
-    lines = text.splitlines()
-    ts_lines = sum(1 for ln in lines if TIME_LINE_RE.match(ln.strip()))
-    if ts_lines <= 0:
-        return 0, 0
-
-    kw = 0
-    if re.search(r"(set\s*list|time\s*stamp|timestamp|セトリ|セットリスト|曲目|song\s*list)", text, re.IGNORECASE):
-        kw += 1
-    if "✿" in text or "＊" in text:
-        kw += 1
-
-    score = ts_lines * 10 + kw * 20 + min(max(like_count, 0), 999)
-    if is_owner:
-        score += 1000
-    return score, ts_lines
-
-
-def fetch_ts_comment_candidates(
-    creds: Credentials,
-    video_id: str,
-    search_terms: str = "",
-    max_pages: int = 3,
-) -> List[Dict[str, Any]]:
-    """
-    固定コメントをAPIで確定できない前提で、候補をスコアリングして上位を返します
-    """
-    creds = ensure_valid_creds(creds)
-    youtube = build("youtube", "v3", credentials=creds)
-    my_channel_id = get_my_channel_id(creds)
-
-    out: List[Dict[str, Any]] = []
+    # ==============================
+    # 1) 予約投稿動画（通常動画/ショート含む）
+    # ==============================
+    video_ids: List[str] = []
     page_token = None
-    pages = 0
-
-    while pages < max_pages:
-        kwargs: Dict[str, Any] = dict(
-            part="snippet",
-            videoId=video_id,
-            maxResults=100,
-            order="relevance",
-            textFormat="plainText",
-        )
-        if page_token:
-            kwargs["pageToken"] = page_token
-        if search_terms.strip():
-            kwargs["searchTerms"] = search_terms.strip()
-
-        try:
-            resp = youtube.commentThreads().list(**kwargs).execute()
-        except HttpError:
-            break
-
-        for it in resp.get("items", []):
-            sn = (it.get("snippet", {}) or {})
-            top = ((sn.get("topLevelComment", {}) or {}).get("snippet", {}) or {})
-
-            text = top.get("textOriginal", "") or ""
-            like_count = int(top.get("likeCount", 0) or 0)
-            author_ch = (top.get("authorChannelId", {}) or {}).get("value")
-            is_owner = bool(my_channel_id and author_ch and author_ch == my_channel_id)
-
-            score, ts_lines = score_ts_comment(text, is_owner=is_owner, like_count=like_count)
-            if score <= 0:
-                continue
-
-            out.append({
-                "text": text,
-                "like_count": like_count,
-                "is_owner": is_owner,
-                "score": score,
-                "ts_lines": ts_lines,
-            })
-
-        page_token = resp.get("nextPageToken")
-        pages += 1
+    while True:
+        pl = youtube.playlistItems().list(
+            part="contentDetails",
+            playlistId=uploads_playlist_id,
+            maxResults=50,
+            pageToken=page_token,
+        ).execute()
+        video_ids += [
+            it["contentDetails"]["videoId"]
+            for it in pl.get("items", [])
+        ]
+        page_token = pl.get("nextPageToken")
         if not page_token:
             break
 
-    out.sort(key=lambda x: x["score"], reverse=True)
+    if video_ids:
+        for i in range(0, len(video_ids), 50):
+            resp = youtube.videos().list(
+                part="snippet,status",
+                id=",".join(video_ids[i:i + 50]),
+            ).execute()
+            for item in resp.get("items", []):
+                status = item.get("status", {})
+                snip = item.get("snippet", {})
 
-    # 重複っぽいものを軽く間引いて上位10件
-    uniq: List[Dict[str, Any]] = []
-    seen = set()
-    for c in out:
-        key = hash(c["text"][:200])
-        if key in seen:
-            continue
-        seen.add(key)
-        uniq.append(c)
-        if len(uniq) >= 10:
+                publish_at_str = status.get("publishAt")
+                if not publish_at_str:
+                    # 即時公開やアーカイブなど publishAt が無いものは除外
+                    continue
+
+                try:
+                    publish_dt = datetime.fromisoformat(
+                        publish_at_str.replace("Z", "+00:00")
+                    )
+                except ValueError:
+                    continue
+
+                # 「公開日時指定の予約投稿」だけを拾う
+                if status.get("privacyStatus") != "private":
+                    continue
+                if publish_dt <= now:
+                    continue
+
+                videos_uploads.append(
+                    Video(
+                        video_id=item["id"],
+                        title=snip.get("title", ""),
+                        description=snip.get("description", ""),
+                        publish_at_utc=publish_dt,
+                    )
+                )
+
+    # ==============================
+    # 2) 公開済み＆配信前のライブ枠（upcoming）
+    # ==============================
+    live_ids: List[str] = []
+    page_token = None
+    while True:
+        resp = youtube.search().list(
+            part="id",
+            channelId=channel_id,
+            eventType="upcoming",
+            type="video",
+            order="date",
+            maxResults=50,
+            pageToken=page_token,
+        ).execute()
+
+        for item in resp.get("items", []):
+            id_obj = item.get("id", {})
+            vid = id_obj.get("videoId")
+            if vid:
+                live_ids.append(vid)
+
+        page_token = resp.get("nextPageToken")
+        if not page_token:
             break
 
-    return uniq
+    if live_ids:
+        for i in range(0, len(live_ids), 50):
+            resp = youtube.videos().list(
+                part="snippet,liveStreamingDetails,status",
+                id=",".join(live_ids[i:i + 50]),
+            ).execute()
+            for item in resp.get("items", []):
+                status = item.get("status", {})
+                snip = item.get("snippet", {})
+                lsd = item.get("liveStreamingDetails", {}) or {}
 
-
-# ==============================
-# セットリスト抽出（例：既存パーサがあるなら差し替え可）
-# ==============================
-
-def to_local_yyyymmdd(dt: datetime, tz_name: str = DEFAULT_TZ) -> str:
-    try:
-        from zoneinfo import ZoneInfo
-        local = dt.astimezone(ZoneInfo(tz_name))
-    except Exception:
-        local = dt
-    return local.strftime("%Y%m%d")
-
-
-def normalize_time_to_hhmmss(h: Optional[str], m: str, s: str) -> str:
-    hh = int(h) if h is not None else 0
-    mm = int(m)
-    ss = int(s)
-    return f"{hh:02d}:{mm:02d}:{ss:02d}"
-
-
-def split_title_artist(rest: str) -> Tuple[str, str]:
-    """
-    よくある区切りで「曲名 / アーティスト」を推定します
-    """
-    rest = (rest or "").strip()
-    if not rest:
-        return "", ""
-
-    # 先頭記号除去
-    rest = re.sub(r"^[\-\*\u2022・▶▼►]+", "", rest).strip()
-
-    sep_candidates = [" / ", " ／ ", "｜", "|", " - ", " – ", " — ", "：", ":", " by "]
-    for sep in sep_candidates:
-        if sep in rest:
-            left, right = rest.split(sep, 1)
-            left, right = left.strip(), right.strip()
-            if left and right:
-                # "by" は曲名 by アーティストの想定、それ以外は曲名-アーティストも許容します
-                return left, right
-
-    return rest, ""
-
-
-def build_setlist_df(text: str, video: Optional[VideoMeta]) -> pd.DataFrame:
-    if not text:
-        return pd.DataFrame()
-
-    rows: List[Dict[str, str]] = []
-    publish_yyyymmdd = to_local_yyyymmdd(video.publish_at_utc) if video else ""
-    url = video.url if video else ""
-    vtitle = video.title if video else ""
-
-    for raw in text.splitlines():
-        line = raw.strip()
-        if not line:
-            continue
-
-        m = TIME_LINE_RE.match(line)
-        if not m:
-            continue
-
-        hh, mm, ss, rest = m.group(1), m.group(2), m.group(3), m.group(4)
-        t = normalize_time_to_hhmmss(hh, mm, ss)
-
-        title, artist = split_title_artist(rest)
-
-        rows.append({
-            "publish_yyyymmdd": publish_yyyymmdd,
-            "time": t,
-            "title": title,
-            "artist": artist,
-            "url": url,
-            "video_title": vtitle,
-            "raw": raw,
-        })
-
-    return pd.DataFrame(rows)
-
-
-# ==============================
-# 既存「プレビュー以下（合流地点）」をここに集約
-# ==============================
-
-def render_preview_and_export(video: Optional[VideoMeta]) -> None:
-    """
-    ここが「プレビュー以下の流れ（既存に合流させる箇所）」です
-    - 入力は st.session_state[TS_TEXT_KEY] だけを見ます
-    - 既存のプレビュー/CSV生成/ダウンロードがあるなら、この関数の中身を差し替えるだけで合流できます
-    """
-    st.markdown("### プレビュー／CSV出力")
-
-    text = st.session_state.get(TS_TEXT_KEY, "") or ""
-    if not text.strip():
-        st.info("タイムスタンプ情報が空です。")
-        return
-
-    if st.button("プレビューを更新"):
-        df = build_setlist_df(text, video)
-        st.session_state["preview_df"] = df
-        st.rerun()
-
-    df: Optional[pd.DataFrame] = st.session_state.get("preview_df")
-    if df is None:
-        st.caption("「プレビューを更新」を押すと表示されます。")
-        return
-
-    if df.empty:
-        st.warning("時刻行（例：0:00 / 00:00 / 1:02:03）が見つかりませんでした。")
-        return
-
-    st.dataframe(df, use_container_width=True, hide_index=True)
-
-    # CSVダウンロード
-    csv_bytes = df.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
-    fname_date = df.iloc[0].get("publish_yyyymmdd", "") if not df.empty else ""
-    fname = f"setlist_{fname_date}.csv" if fname_date else "setlist.csv"
-
-    st.download_button(
-        label="CSVをダウンロード",
-        data=csv_bytes,
-        file_name=fname,
-        mime="text/csv",
-    )
-
-
-# ==============================
-# UI：入力方式切替（マニュアル / おまかせ）
-# ==============================
-
-def render_input_switcher(creds: Credentials) -> Optional[VideoMeta]:
-    st.markdown("### タイムスタンプ入力")
-
-    st.session_state.setdefault("ts_input_mode", "マニュアル")
-    st.session_state.setdefault(TS_TEXT_KEY, "")
-
-    mode = st.radio(
-        "入力方式",
-        ["マニュアル", "おまかせ（コメント自動取得）"],
-        horizontal=True,
-        key="ts_input_mode",
-    )
-
-    # 動画URLはどちらでも使うので共通で保持します
-    st.session_state.setdefault("ts_video_url", "")
-    st.session_state.setdefault("ts_video_id", None)
-    st.session_state.setdefault("ts_video_meta", None)
-
-    # 「おまかせ」用
-    st.session_state.setdefault("ts_search_terms", "set list")
-    st.session_state.setdefault("ts_candidates", [])
-    st.session_state.setdefault("ts_pick_idx", 0)
-
-    col_url, col_hint = st.columns([3, 2])
-    with col_url:
-        st.text_input("動画URL（任意ですが、おまかせは必須です）", key="ts_video_url")
-    with col_hint:
-        st.caption("shorts/live/watch/youtu.be 全対応です。")
-
-    # 動画メタは URL から引く（おまかせ・マニュアル共通で表示できるようにします）
-    video_meta: Optional[VideoMeta] = None
-    url = st.session_state.get("ts_video_url", "")
-    vid = extract_video_id_from_url(url) if url else None
-    if vid:
-        st.session_state["ts_video_id"] = vid
-        if st.button("動画情報を取得", key="btn_fetch_video_meta"):
-            vm = fetch_video_meta(creds, vid)
-            st.session_state["ts_video_meta"] = vm
-            st.rerun()
-
-    video_meta = st.session_state.get("ts_video_meta")
-    if video_meta:
-        st.markdown("#### 対象動画（確認）")
-        st.write(f"**タイトル：** {video_meta.title}")
-        st.write(f"**URL：** {video_meta.url}")
-        st.write(f"**日時(UTC)：** {video_meta.publish_at_utc.strftime('%Y-%m-%d %H:%M:%S')}")
-
-    if mode == "おまかせ（コメント自動取得）":
-        st.markdown("#### コメントからタイムスタンプ候補を取得")
-
-        col_st, col_btn = st.columns([3, 1])
-        with col_st:
-            st.text_input("検索語（任意）", key="ts_search_terms")
-        with col_btn:
-            if st.button("候補を取得", key="btn_fetch_candidates"):
-                if not vid:
-                    st.error("動画URLから videoId を抽出できませんでした。")
-                else:
-                    cands = fetch_ts_comment_candidates(
-                        creds=creds,
-                        video_id=vid,
-                        search_terms=st.session_state.get("ts_search_terms", ""),
-                        max_pages=3,
+                sched_str = lsd.get("scheduledStartTime")
+                if not sched_str:
+                    continue
+                try:
+                    sched_dt = datetime.fromisoformat(
+                        sched_str.replace("Z", "+00:00")
                     )
-                    st.session_state["ts_candidates"] = cands
-                    st.session_state["ts_pick_idx"] = 0
-                    if not cands:
-                        st.warning("候補が見つかりませんでした（コメント無効/該当なしの可能性）です。")
-                    else:
-                        st.success(f"{len(cands)} 件の候補を取得しました。")
-                st.rerun()
+                except ValueError:
+                    continue
 
-        cands: List[Dict[str, Any]] = st.session_state.get("ts_candidates", []) or []
-        if cands:
-            labels = []
-            for i, c in enumerate(cands):
-                head = (c["text"].splitlines()[0] if c["text"] else "").strip()
-                head = head[:90] + ("…" if len(head) > 90 else "")
-                owner = "主" if c.get("is_owner") else "他"
-                labels.append(f"[{i+1}] ts={c.get('ts_lines',0)} like={c.get('like_count',0)} {owner}｜{head}")
+                # これから配信される枠だけ
+                if sched_dt <= now:
+                    continue
 
-            idx = st.selectbox(
-                "候補コメント",
-                options=list(range(len(labels))),
-                format_func=lambda i: labels[i],
-                index=int(st.session_state.get("ts_pick_idx", 0) or 0),
-            )
-            st.session_state["ts_pick_idx"] = idx
+                # URL公開済み（public / unlisted）のみ対象
+                if status.get("privacyStatus") not in ("public", "unlisted"):
+                    continue
 
-            col_apply, col_note = st.columns([1, 3])
-            with col_apply:
-                if st.button("この候補を入力欄へ反映", key="btn_apply_candidate"):
-                    st.session_state[TS_TEXT_KEY] = cands[idx]["text"]
-                    st.success("入力欄に反映しました。以降はプレビュー以下が同じ入力で動きます。")
-                    st.rerun()
-            with col_note:
-                st.caption("反映後も下の入力欄で自由に編集できます。")
+                videos_lives.append(
+                    Video(
+                        video_id=item["id"],
+                        title=snip.get("title", ""),
+                        description=snip.get("description", ""),
+                        publish_at_utc=sched_dt,
+                    )
+                )
 
-    # 合流地点：マニュアルでもおまかせでも、ここに最終テキストが入る設計です
-    st.text_area(
-        "タイムスタンプ情報（合流入力）",
-        key=TS_TEXT_KEY,
-        height=280,
-        placeholder="ここにタイムスタンプ／セットリストを貼り付けます（おまかせ反映もここに入ります）。",
+    # ==============================
+    # 3) マージ & ソート（video_id で重複排除）
+    # ==============================
+    videos_by_id: dict[str, Video] = {}
+    for v in videos_uploads + videos_lives:
+        videos_by_id[v.video_id] = v
+
+    videos: List[Video] = list(videos_by_id.values())
+    videos.sort(key=lambda v: v.publish_at_utc)
+    return videos
+
+
+# ==============================
+# Google Sheets（テンプレ）
+# ==============================
+
+def default_templates() -> List[Template]:
+    return [
+        Template(
+            id="1",
+            name="シンプルなお知らせ",
+            body="【新着】{title}\n\n{snippet}\n\n▼動画はこちら\n{URL}",
+            is_default=True
+        ),
+        Template(
+            id="2",
+            name="丁寧めなお知らせ",
+            body="本日 {publish_at} に動画を公開予定です。\n\n{snippet}\n\n{URL}",
+            is_default=False
+        ),
+    ]
+
+
+def load_templates_from_sheets(creds: Credentials) -> List[Template]:
+    if not SPREADSHEET_ID:
+        return default_templates()
+    creds = ensure_valid_creds(creds)
+    service = build("sheets", "v4", credentials=creds)
+    result = service.spreadsheets().values().get(
+        spreadsheetId=SPREADSHEET_ID,
+        range="Templates!A2:D",
+    ).execute()
+    values = result.get("values", [])
+    if not values:
+        return default_templates()
+
+    out: List[Template] = []
+    for row in values:
+        t_id = row[0] if len(row) > 0 else ""
+        name = row[1] if len(row) > 1 else ""
+        body = row[2] if len(row) > 2 else ""
+        is_default = (str(row[3]).upper() == "TRUE") if len(row) > 3 else False
+        if t_id and name and body:
+            # 旧キーを内部変換（表示は変えない＝ユーザーが編集で直せる）
+            out.append(Template(id=t_id, name=name, body=body, is_default=is_default))
+
+    return out or default_templates()
+
+
+def save_templates_to_sheets(creds: Credentials, templates: List[Template]) -> None:
+    if not SPREADSHEET_ID:
+        return
+    creds = ensure_valid_creds(creds)
+    service = build("sheets", "v4", credentials=creds)
+    values = [[t.id, t.name, t.body, "TRUE" if t.is_default else "FALSE"] for t in templates]
+    service.spreadsheets().values().clear(
+        spreadsheetId=SPREADSHEET_ID,
+        range="Templates!A2:D"
+    ).execute()
+    if values:
+        service.spreadsheets().values().update(
+            spreadsheetId=SPREADSHEET_ID,
+            range="Templates!A2:D",
+            valueInputOption="RAW",
+            body={"values": values},
+        ).execute()
+
+
+def append_template_to_sheets(creds: Credentials, template: Template) -> None:
+    if not SPREADSHEET_ID:
+        return
+    creds = ensure_valid_creds(creds)
+    service = build("sheets", "v4", credentials=creds)
+    service.spreadsheets().values().append(
+        spreadsheetId=SPREADSHEET_ID,
+        range="Templates!A:D",
+        valueInputOption="RAW",
+        insertDataOption="INSERT_ROWS",
+        body={"values": [[
+            template.id,
+            template.name,
+            template.body,
+            "TRUE" if template.is_default else "FALSE"
+        ]]},
+    ).execute()
+
+
+def next_template_id(existing: List[Template]) -> str:
+    nums = []
+    for t in existing:
+        try:
+            nums.append(int(t.id))
+        except Exception:
+            pass
+    return str(max(nums) + 1) if nums else uuid.uuid4().hex[:8]
+
+
+# ==============================
+# アプリ本体
+# ==============================
+
+def main():
+    st.set_page_config(page_title="予約投稿作成フォーム", layout="wide")
+    st.title("📝 予約投稿作成フォーム（YouTube×X）")
+
+    st.markdown(
+        "<style>div[data-testid='stExpander']{margin-bottom:0.75rem}</style>",
+        unsafe_allow_html=True,
     )
 
-    return video_meta
-
-
-# ==============================
-# メイン
-# ==============================
-
-def main() -> None:
-    st.set_page_config(page_title="歌枠セットリストCSVジェネレーター", layout="wide")
-    st.title("🎤 歌枠セットリストCSVジェネレーター（入力切替：マニュアル／おまかせ）")
-
-    # OAuthコールバック
+    # OAuth コールバック処理
     handle_oauth_callback()
 
+    # セッション初期化
     st.session_state.setdefault("google_creds", None)
+    st.session_state.setdefault("videos", [])
+    st.session_state.setdefault("templates", default_templates())
+    st.session_state.setdefault("tweet_text", "")
+    st.session_state.setdefault("tmpl_picker", None)          # 現在編集中テンプレ名
+    st.session_state.setdefault("tmpl_editor_name", "")
+    st.session_state.setdefault("tmpl_editor_body", "")
+    st.session_state.setdefault("current_template_id", None)  # 「現在のテンプレ」表示用
+    # 選択状態の記録（自動更新用）
+    st.session_state.setdefault("prev_selected_video_id", None)
+    st.session_state.setdefault("prev_selected_template_id", None)
+    st.session_state.setdefault("plus5_enabled", True)        # ⏰ +5分スイッチ（デフォルトON）
 
+    creds: Optional[Credentials] = st.session_state["google_creds"]
+
+    # ① Googleアカウント連携（メイン画面で実施）
     st.subheader("① Googleアカウント連携")
-    creds: Optional[Credentials] = st.session_state.get("google_creds")
 
     if creds is None:
-        st.write("まずは Google アカウントと連携してください。")
+        st.write("まずは Google アカウントとの連携を行ってください。")
+        st.caption("※Googleの認証画面が別タブで開きます。認証後、この画面に戻ってきてください。")
         start_google_oauth()
         st.stop()
+    else:
+        cols_auth = st.columns([3, 1])
+        with cols_auth[0]:
+            st.success("✅ Google認証済みです。")
+        with cols_auth[1]:
+            if st.button("認証をリセット"):
+                for k in [
+                    "google_creds",
+                    "videos",
+                    "tweet_text",
+                    "templates_loaded",
+                    "tmpl_editor_name",
+                    "tmpl_editor_body",
+                    "tmpl_picker",
+                    "current_template_id",
+                    "prev_selected_video_id",
+                    "prev_selected_template_id",
+                    "plus5_enabled",
+                ]:
+                    st.session_state.pop(k, None)
+                st.rerun()
 
-    creds = ensure_valid_creds(creds)
-    if creds is None:
-        st.error("認証情報が無効です。認証をやり直してください。")
-        st.session_state["google_creds"] = None
-        st.rerun()
+    # テンプレ読み込み（初回）
+    if "templates_loaded" not in st.session_state:
+        try:
+            st.session_state["templates"] = load_templates_from_sheets(creds)
+        except Exception as e:
+            st.warning(f"テンプレ読み込みに失敗しました（初期テンプレを使用）：{e}")
+        st.session_state["templates_loaded"] = True
+    templates: List[Template] = st.session_state["templates"]
 
-    st.success("Google認証済みです。")
+    # ② 対象動画とテンプレートの選択
+    st.subheader("② 対象動画とテンプレートの選択")
 
-    st.subheader("② 入力（マニュアル／おまかせ）")
-    video_meta = render_input_switcher(creds)
+    # 1行目：ボタンのみ
+    if st.button("自分のチャンネルの予約動画リストを取得／更新"):
+        try:
+            st.session_state["videos"] = fetch_scheduled_videos(creds)
+            if st.session_state["videos"]:
+                st.success(f"{len(st.session_state['videos'])} 件の予約投稿／配信予定動画を取得しました。")
+            else:
+                st.warning("予約投稿中／配信予定の動画が見つかりませんでした。")
+        except Exception as e:
+            st.error(f"予約動画の取得に失敗しました：{e}")
 
-    st.subheader("③ プレビュー以下（合流）")
-    render_preview_and_export(video_meta)
+    videos: List[Video] = st.session_state["videos"]
+
+    if not videos:
+        st.info("「自分のチャンネルの予約動画リストを取得／更新」ボタンで予約動画リストを取得してください。")
+        return
+
+    # 2行目：動画選択とテンプレ選択を横並び
+    col_video_select, col_tmpl_select = st.columns([1, 1])
+
+    with col_video_select:
+        video_options = {
+            f"{v.title} / {format_publish_at(v.publish_at_utc)}": v.video_id
+            for v in videos
+        }
+        selected_label = st.selectbox(
+            "予約動画を選んでください",
+            list(video_options.keys()),
+        )
+        current_video = next(
+            v for v in videos if v.video_id == video_options[selected_label]
+        )
+
+    with col_tmpl_select:
+        tmpl_map = {t.name: t.id for t in templates}
+        selected_tmpl_label = st.selectbox(
+            "テンプレ（ツイートの型）を選んでください",
+            list(tmpl_map.keys()),
+        )
+        selected_template = next(
+            t for t in templates if t.id == tmpl_map[selected_tmpl_label]
+        )
+
+    # --- 選択変更時にツイート本文 & 現在テンプレを自動更新 ---
+    prev_vid_id = st.session_state.get("prev_selected_video_id")
+    prev_tmpl_id = st.session_state.get("prev_selected_template_id")
+
+    is_first = (prev_vid_id is None and prev_tmpl_id is None)
+    video_changed = (prev_vid_id is not None and prev_vid_id != current_video.video_id)
+    tmpl_changed = (prev_tmpl_id is not None and prev_tmpl_id != selected_template.id)
+
+    if is_first or video_changed or tmpl_changed:
+        st.session_state["tmpl_picker"] = selected_template.name
+        st.session_state["tmpl_editor_name"] = selected_template.name
+        st.session_state["tmpl_editor_body"] = selected_template.body
+        st.session_state["current_template_id"] = selected_template.id
+
+        # 概要由来は最大200unitまで（改行保持）
+        snippet = extract_snippet(current_video.description)
+        tweet = build_tweet_from_template(
+            selected_template.body,
+            current_video,
+            snippet,
+        )
+        st.session_state["tweet_text"] = tweet
+
+    st.session_state["prev_selected_video_id"] = current_video.video_id
+    st.session_state["prev_selected_template_id"] = selected_template.id
+
+    if st.session_state["current_template_id"] is None:
+        st.session_state["current_template_id"] = selected_template.id
+
+    # ==============================
+    # メイン：動画情報 & テンプレ編集
+    # ==============================
+
+    st.subheader("③ 　告知文を作成する")
+
+    # タイトルと公開予定日時を横並び
+    col_title, col_time = st.columns([3, 2])
+    with col_title:
+        st.write(f"**動画タイトル：** {current_video.title}")
+    with col_time:
+        st.write(f"**公開予定日時：** {format_publish_at_with_weekday(current_video.publish_at_utc)}")
+
+    st.write(f"**共有URL（{ '{URL}' }）：** {current_video.normal_url}")
+
+    # 概要欄（全文をプレビュー）
+    with st.expander("概要欄を確認する"):
+        st.text(current_video.description)
+
+    # 現在のテンプレ
+    cur_tmpl = next(
+        (t for t in templates if t.id == st.session_state["current_template_id"]),
+        selected_template,
+    )
+    st.markdown("#### 現在選択しているテンプレ")
+    st.write(f"**テンプレ名：** {cur_tmpl.name}")
+    st.code(cur_tmpl.body or "(本文なし)", language=None)
+
+    # テンプレ編集
+    with st.expander("テンプレを編集する"):
+        if st.session_state["tmpl_picker"] is None:
+            st.session_state["tmpl_picker"] = cur_tmpl.name
+            st.session_state["tmpl_editor_name"] = cur_tmpl.name
+            st.session_state["tmpl_editor_body"] = cur_tmpl.body
+
+        picker_options = [t.name for t in templates]
+        try:
+            default_index = picker_options.index(st.session_state["tmpl_picker"])
+        except ValueError:
+            default_index = picker_options.index(cur_tmpl.name)
+
+        picked = st.selectbox(
+            "テンプレを選択",
+            picker_options,
+            index=default_index,
+        )
+
+        if picked != st.session_state["tmpl_picker"]:
+            st.session_state["tmpl_picker"] = picked
+            t = next(t for t in templates if t.name == picked)
+            st.session_state["tmpl_editor_name"] = t.name
+            st.session_state["tmpl_editor_body"] = t.body
+            st.session_state["current_template_id"] = t.id
+
+        ed_name = st.text_input("テンプレ名をつける", key="tmpl_editor_name")
+        ed_body = st.text_area("テンプレ本文(編集用)", key="tmpl_editor_body", height=160)
+
+        c1_btn, c2_btn, c3_btn = st.columns(3)
+        with c1_btn:
+            if st.button("💾 このテンプレを保存（上書き）"):
+                try:
+                    target = next(
+                        t for t in templates
+                        if t.name == st.session_state["tmpl_picker"]
+                    )
+                    target.name = ed_name
+                    target.body = ed_body
+                    save_templates_to_sheets(creds, templates)
+                    st.session_state["tmpl_picker"] = ed_name
+                    st.session_state["current_template_id"] = target.id
+                    st.success("テンプレを上書き保存しました。")
+                    st.rerun()
+                except StopIteration:
+                    st.error("対象テンプレが見つかりませんでした。")
+                except Exception as e:
+                    st.error(f"保存に失敗しました：{e}")
+
+        with c2_btn:
+            if st.button("➕ このテンプレを新規追加"):
+                try:
+                    new_id = next_template_id(templates)
+                    new_tmpl = Template(
+                        id=new_id,
+                        name=(ed_name or f"新規テンプレ {new_id}").strip(),
+                        body=ed_body,
+                        is_default=False,
+                    )
+                    append_template_to_sheets(creds, new_tmpl)
+                    st.session_state["templates"] = templates + [new_tmpl]
+                    st.session_state["tmpl_picker"] = new_tmpl.name
+                    st.session_state["current_template_id"] = new_tmpl.id
+                    st.success(f"テンプレを新規追加しました（ID={new_id}）。")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"新規追加に失敗しました：{e}")
+
+        with c3_btn:
+            if st.button("🗑 このテンプレを削除"):
+                try:
+                    remaining = [
+                        t for t in templates
+                        if t.name != st.session_state["tmpl_picker"]
+                    ]
+                    if len(remaining) == len(templates):
+                        st.warning("削除対象のテンプレが見つかりません。")
+                    elif not remaining:
+                        st.warning("テンプレは最低1件必要なため、削除できません。")
+                    else:
+                        save_templates_to_sheets(creds, remaining)
+                        st.session_state["templates"] = remaining
+                        st.session_state["tmpl_picker"] = remaining[0].name
+                        st.session_state["current_template_id"] = remaining[0].id
+                        st.success("テンプレを削除しました。")
+                        st.rerun()
+                except Exception as e:
+                    st.error(f"削除に失敗しました：{e}")
+
+        st.markdown("---")
+        if st.button("🌀 現在のテンプレを使用して再出力する↓"):
+            # 最大200unit 上限（改行保持）
+            snippet = extract_snippet(current_video.description)
+            tweet = build_tweet_from_template(
+                st.session_state["tmpl_editor_body"],
+                current_video,
+                snippet,
+            )
+            st.session_state["tweet_text"] = tweet
+            st.success("現在のテンプレでツイート本文を再生成しました。")
+            st.rerun()
+
+        st.markdown("---")
+        with st.expander("差し込みキーワードの意味", expanded=False):
+            st.markdown("**タイトル**（動画タイトルがそのまま入ります）")
+            st.code("{title}", language=None)
+
+            st.markdown("**概要（冒頭200文字相当・改行保持）**")
+            st.code("{snippet}", language=None)
+
+            st.markdown("**予約済みの公開日時**（m月d日(曜) 形式で入ります。例：11月12日(水)）")
+            st.code("{publish_at}", language=None)
+
+            st.markdown("**共有URL（youtu.be / ?si=無し）**")
+            st.code("{URL}", language=None)
+
+            st.caption("※旧テンプレの {SHORTS} / {url} は内部で {URL} に自動変換して生成します。")
+
+    # ===== ツイート本文 =====
+
+    # ここで再度、確認用にタイトルとURLを表示
+    st.markdown("#### 対象動画（確認用）")
+    col_conf_title, col_conf_time = st.columns([3, 2])
+    with col_conf_title:
+        st.write(f"**動画タイトル：** {current_video.title}")
+    with col_conf_time:
+        st.write(f"**公開予定日時：** {format_publish_at_with_weekday(current_video.publish_at_utc)}")
+    st.write(f"**共有URL：** {current_video.normal_url}")
+
+    # 見出し
+    st.markdown("#### ✏️ 投稿本文（ここで自由に編集できます）")
+    # 説明文
+    st.caption("CTRL+Enter、カウントボタンで最新の文字数を再計算")
+
+    # テキストエリア本体 + [+5分スイッチ] を横並びに配置
+    col_text, col_switch = st.columns([4, 1])
+    with col_text:
+        tweet_text = st.text_area(
+            label="",
+            key="tweet_text",
+            height=240,
+        )
+    with col_switch:
+        st.checkbox(
+            "[+5分スイッチ]",
+            key="plus5_enabled",
+            value=st.session_state.get("plus5_enabled", True),
+        )
+
+    # [+5分スイッチ] の状態に応じて表示用の時刻を決定
+    if st.session_state.get("plus5_enabled", True):
+        display_dt = current_video.publish_at_utc + timedelta(minutes=5)
+    else:
+        display_dt = current_video.publish_at_utc
+
+    # 曜日付きのフォーマットで表示
+    st.info(f"⏰ この動画の公開予定日時： {format_publish_at_with_weekday(display_dt)}")
+
+    # 文字数カウント（常に最新値を表示）
+    body_units, url_units, url_count = count_units_breakdown(tweet_text or "")
+    total_units = body_units + url_units
+    if total_units > 280:
+        st.error(
+            f"現在 {total_units}字（本文{body_units}字 + URL{url_units}字 / URL本数 {url_count}）－ 280字を超えています。"
+        )
+    else:
+        st.write(
+            f"現在 **{total_units}字（本文{body_units}字 + URL{url_units}字）** ／ 280字"
+        )
+
+    # 直後にボタン2つを同じスタイルで表示
+    safe_text = (tweet_text or "")
+    safe_text = (
+        safe_text.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("'", "\\'")
+        .replace("\n", "\\n")
+    )
+
+    buttons_html = f"""
+    <div style="margin: 0.25rem 0 0.5rem 0; display: flex; flex-wrap: wrap; gap: 8px;">
+      <button
+        type="button"
+        style="padding:8px 14px;border-radius:8px;border:1px solid #aaa;
+               cursor:pointer;background-color:#f5f5f5;color:#333;
+               font-size:14px;line-height:1.3;"
+      >
+        文字数カウント
+      </button>
+      <button
+        type="button"
+        style="padding:8px 14px;border-radius:8px;border:1px solid #aaa;
+               cursor:pointer;background-color:#f5f5f5;color:#333;
+               font-size:14px;line-height:1.3;"
+        onclick='navigator.clipboard.writeText("{safe_text}")'
+      >
+        クリップボードにコピー
+      </button>
+    </div>
+    """
+    html(buttons_html, height=70)
 
 
 if __name__ == "__main__":
