@@ -236,7 +236,12 @@ def create_flow() -> Flow:
 
 
 def handle_oauth_callback():
-    params = st.experimental_get_query_params()
+    # Streamlit 1.30+ では experimental_get_query_params が廃止されたため、
+    # 新旧 API の両方に対応する。
+    if hasattr(st, "query_params"):
+        params = {k: [v] if isinstance(v, str) else list(v) for k, v in st.query_params.items()}
+    else:
+        params = st.experimental_get_query_params()
     if "code" not in params:
         return
     code = params.get("code", [None])[0]
@@ -245,7 +250,10 @@ def handle_oauth_callback():
     flow = create_flow()
     flow.fetch_token(code=code)
     st.session_state["google_creds"] = flow.credentials
-    st.experimental_set_query_params()
+    if hasattr(st, "query_params"):
+        st.query_params.clear()
+    else:
+        st.experimental_set_query_params()
     st.rerun()
 
 
