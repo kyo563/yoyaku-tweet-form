@@ -849,6 +849,7 @@ def main():
     st.markdown("#### ✏️ 投稿本文（ここで自由に編集できます）")
     # 説明文
     st.caption("CTRL+Enter、カウントボタンで最新の文字数を再計算")
+    st.caption("動画内共有ボタンからリンク取得したほうがいい🦆")
 
     # テキストエリア本体 + [+5分スイッチ] を横並びに配置
     col_text, col_switch = st.columns([4, 1])
