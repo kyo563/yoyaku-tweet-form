@@ -969,8 +969,19 @@ def main():
         クリップボードにコピー
       </button>
     </div>
+    <div style="margin: 0 0 0.5rem 0;">
+      <a
+        href="https://x.com/home"
+        target="_blank"
+        rel="noopener noreferrer"
+        style="font-size:14px;"
+      >
+        Xを開く（ログイン済み想定）
+      </a>
+      <span style="font-size:14px;color:#666;"> → ホームからプロフィールへ進んで予約投稿してください。</span>
+    </div>
     """
-    html(buttons_html, height=70)
+    html(buttons_html, height=120)
 
     st.markdown("#### 👀 プレビュー")
     st.info(build_next_week_comment())
