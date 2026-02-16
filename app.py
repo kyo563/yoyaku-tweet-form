@@ -974,6 +974,7 @@ def main():
         href="https://x.com/home"
         target="_blank"
         rel="noopener noreferrer"
+        onclick="window.open('https://x.com/home', '_blank', 'noopener,noreferrer'); return false;"
         style="font-size:14px;"
       >
         Xを開く
