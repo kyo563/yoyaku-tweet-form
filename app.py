@@ -976,7 +976,7 @@ def main():
         rel="noopener noreferrer"
         style="font-size:14px;"
       >
-        Xを開く（ログイン済み想定）
+        Xを開く
       </a>
       <span style="font-size:14px;color:#666;"> → ホームからプロフィールへ進んで予約投稿してください。</span>
     </div>
