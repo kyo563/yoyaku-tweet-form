@@ -2,9 +2,11 @@ import re
 import unicodedata
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone, timedelta
+from datetime import date, datetime, timezone, timedelta
 from typing import List, Optional
 
+import json
+from urllib.request import urlopen
 import streamlit as st
 from streamlit.components.v1 import html
 from google.oauth2.credentials import Credentials
@@ -148,6 +150,57 @@ def format_publish_at_pretty(dt: datetime, tz_name: str = "Asia/Tokyo") -> str:
         local = dt
     wd = ["月", "火", "水", "木", "金", "土", "日"][local.weekday()]
     return f"{local.month}月{local.day}日({wd})"
+
+
+def fetch_japanese_holidays() -> dict[str, str]:
+    """
+    祝日API(holidays-jp)から yyyy-mm-dd: 祝日名 の辞書を取得する。
+    失敗時は空辞書を返す。
+    """
+    url = "https://holidays-jp.github.io/api/v1/date.json"
+    try:
+        with urlopen(url, timeout=5) as res:
+            data = json.load(res)
+        if isinstance(data, dict):
+            return {str(k): str(v) for k, v in data.items()}
+    except Exception:
+        pass
+    return {}
+
+
+def build_next_week_comment(base_date: Optional[date] = None) -> str:
+    """
+    来週(月曜〜日曜)の期間文言を作る。
+    期間内の日本の祝日があれば追記する。
+    """
+    today = base_date or date.today()
+
+    days_until_this_monday = today.weekday()
+    this_monday = today - timedelta(days=days_until_this_monday)
+    next_monday = this_monday + timedelta(days=7)
+    next_sunday = next_monday + timedelta(days=6)
+
+    period_text = (
+        f"来週は{next_monday.month}月{next_monday.day}日(月)"
+        f"～{next_sunday.month}月{next_sunday.day}日(日)です。"
+    )
+
+    holidays = fetch_japanese_holidays()
+    weekday_labels = ["月", "火", "水", "木", "金", "土", "日"]
+
+    holiday_lines: List[str] = []
+    cursor = next_monday
+    while cursor <= next_sunday:
+        key = cursor.isoformat()
+        if key in holidays:
+            holiday_lines.append(
+                f"・{cursor.month}月{cursor.day}日({weekday_labels[cursor.weekday()]})：{holidays[key]}"
+            )
+        cursor += timedelta(days=1)
+
+    if holiday_lines:
+        return period_text + "\nこの期間の祝日:\n" + "\n".join(holiday_lines)
+    return period_text + "\nこの期間に祝日はありません。"
 
 
 # URL/title/publish_at は削らない仕様だが、汎用関数として残しておく
@@ -918,6 +971,9 @@ def main():
     </div>
     """
     html(buttons_html, height=70)
+
+    st.markdown("#### 👀 プレビュー")
+    st.info(build_next_week_comment())
 
 
 if __name__ == "__main__":
