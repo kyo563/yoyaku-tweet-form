@@ -1,0 +1,32 @@
+name: Fetch Latest Video Status
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 * * * *"
+
+jobs:
+  fetch-status:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Fetch latest video status
+        env:
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+          YOUTUBE_CHANNEL_ID: ${{ secrets.YOUTUBE_CHANNEL_ID }}
+          OUTPUT_PATH: data/latest_video_status.json
+        run: python scripts/fetch_latest_video_status.py
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: latest-video-status
+          path: data/latest_video_status.json
+          if-no-files-found: error
