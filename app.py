@@ -207,6 +207,13 @@ def parse_title_and_url(raw: str) -> tuple[str, str]:
     return title, url
 
 
+def parse_hyperlink_from_html(raw_html: str) -> str:
+    if not raw_html:
+        return ""
+    m = re.search(r"href=['\"](https?://[^'\"]+)['\"]", raw_html)
+    return m.group(1).strip() if m else ""
+
+
 def parse_int(raw: str) -> int:
     if not raw:
         return 0
@@ -217,15 +224,15 @@ def parse_int(raw: str) -> int:
 @st.cache_data(show_spinner=False)
 def fetch_record_rows_cached(cache_key: str) -> List[DailyVideoStatus]:
     _ = cache_key
-    url = (
+    csv_url = (
         f"https://docs.google.com/spreadsheets/d/{VIDEO_STATUS_SHEET_ID}/export"
         f"?format=csv&gid={VIDEO_STATUS_GID}"
     )
-    with urlopen(url, timeout=10) as res:
-        body = res.read().decode("utf-8")
+    with urlopen(csv_url, timeout=10) as res:
+        csv_body = res.read().decode("utf-8")
 
     rows: List[DailyVideoStatus] = []
-    reader = csv.reader(body.splitlines())
+    reader = csv.reader(csv_body.splitlines())
     next(reader, None)
     for row in reader:
         updated_at = parse_sheet_datetime(row[0] if len(row) > 0 else "")
@@ -244,6 +251,36 @@ def fetch_record_rows_cached(cache_key: str) -> List[DailyVideoStatus]:
                 comments=parse_int(row[7] if len(row) > 7 else ""),
             )
         )
+
+    # CSV ではハイパーリンクの URL が落ちるケースがあるため、
+    # gviz の formatted 値（<a href="...">）から C 列 URL を補完する。
+    try:
+        gviz_url = (
+            f"https://docs.google.com/spreadsheets/d/{VIDEO_STATUS_SHEET_ID}/gviz/tq"
+            f"?gid={VIDEO_STATUS_GID}&tqx=out:json"
+        )
+        with urlopen(gviz_url, timeout=10) as res:
+            text = res.read().decode("utf-8")
+
+        m = re.search(r"setResponse\((.*)\);\s*$", text, re.DOTALL)
+        payload = json.loads(m.group(1)) if m else {}
+        table_rows = payload.get("table", {}).get("rows", [])
+
+        for i, table_row in enumerate(table_rows):
+            if i >= len(rows):
+                break
+            cells = table_row.get("c") or []
+            if len(cells) <= 2:
+                continue
+            cell = cells[2] or {}
+            hyperlink = parse_hyperlink_from_html(str(cell.get("f") or ""))
+            if hyperlink:
+                rows[i].url = hyperlink
+            if not rows[i].title:
+                rows[i].title = str(cell.get("v") or "").strip()
+    except Exception:
+        pass
+
     return rows
 
 
