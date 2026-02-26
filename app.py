@@ -214,6 +214,16 @@ def parse_hyperlink_from_html(raw_html: str) -> str:
     return m.group(1).strip() if m else ""
 
 
+def build_record_match_key(updated_at: datetime, post_at: datetime, title: str) -> str:
+    """
+    CSV と gviz の行を突合するための安定キー。
+    行番号依存だと、片方でスキップ行がある場合にズレるため、
+    日時 + 正規化タイトルで結合する。
+    """
+    normalized_title = re.sub(r"\s+", " ", (title or "").strip())
+    return f"{updated_at.isoformat()}::{post_at.isoformat()}::{normalized_title}"
+
+
 def parse_int(raw: str) -> int:
     if not raw:
         return 0
@@ -232,6 +242,7 @@ def fetch_record_rows_cached(cache_key: str) -> List[DailyVideoStatus]:
         csv_body = res.read().decode("utf-8")
 
     rows: List[DailyVideoStatus] = []
+    row_keys: List[str] = []
     reader = csv.reader(csv_body.splitlines())
     next(reader, None)
     for row in reader:
@@ -251,6 +262,7 @@ def fetch_record_rows_cached(cache_key: str) -> List[DailyVideoStatus]:
                 comments=parse_int(row[7] if len(row) > 7 else ""),
             )
         )
+        row_keys.append(build_record_match_key(updated_at, post_at, title))
 
     # CSV ではハイパーリンクの URL が落ちるケースがあるため、
     # gviz の formatted 値（<a href="...">）から C 列 URL を補完する。
@@ -265,19 +277,33 @@ def fetch_record_rows_cached(cache_key: str) -> List[DailyVideoStatus]:
         m = re.search(r"setResponse\((.*)\);\s*$", text, re.DOTALL)
         payload = json.loads(m.group(1)) if m else {}
         table_rows = payload.get("table", {}).get("rows", [])
+        gviz_link_map: dict[str, tuple[str, str]] = {}
 
-        for i, table_row in enumerate(table_rows):
-            if i >= len(rows):
-                break
+        for table_row in table_rows:
             cells = table_row.get("c") or []
-            if len(cells) <= 2:
+            if len(cells) <= 3:
                 continue
-            cell = cells[2] or {}
-            hyperlink = parse_hyperlink_from_html(str(cell.get("f") or ""))
+            updated_at = parse_sheet_datetime(str((cells[0] or {}).get("v") or ""))
+            post_at = parse_sheet_datetime(str((cells[3] or {}).get("v") or ""))
+            if not updated_at or not post_at:
+                continue
+
+            title_cell = cells[2] or {}
+            gviz_title_raw = str(title_cell.get("v") or "").strip()
+            gviz_title, _ = parse_title_and_url(gviz_title_raw)
+            hyperlink = parse_hyperlink_from_html(str(title_cell.get("f") or ""))
+            key = build_record_match_key(updated_at, post_at, gviz_title)
+            gviz_link_map[key] = (hyperlink, gviz_title)
+
+        for i, row in enumerate(rows):
+            entry = gviz_link_map.get(row_keys[i])
+            if not entry:
+                continue
+            hyperlink, gviz_title = entry
             if hyperlink:
-                rows[i].url = hyperlink
-            if not rows[i].title:
-                rows[i].title = str(cell.get("v") or "").strip()
+                row.url = hyperlink
+            if not row.title:
+                row.title = gviz_title
     except Exception:
         pass
 
@@ -329,9 +355,11 @@ def render_latest_video_status_tab() -> None:
         key = row.url or f"{row.title}::{row.post_at.isoformat()}"
         prev_row = yesterday_deduped.get(key)
         if prev_row is None:
-            continue
-        likes_diff = row.likes - prev_row.likes
-        comments_diff = row.comments - prev_row.comments
+            likes_diff = row.likes
+            comments_diff = row.comments
+        else:
+            likes_diff = row.likes - prev_row.likes
+            comments_diff = row.comments - prev_row.comments
         # 高評価・コメントの両方が増減なしの動画は表示しない
         if likes_diff == 0 and comments_diff == 0:
             continue
@@ -339,10 +367,10 @@ def render_latest_video_status_tab() -> None:
 
     st.caption("通常は毎日 9:00（JST）を境に再取得されるようキャッシュキーを切り替えています。")
     st.caption("今すぐ同期したい場合は、上の「最新情報に更新」ボタンを押してください。")
-    st.caption(f"表示対象: A列の日付が {today_jst.strftime('%Y/%m/%d')} の行（前日比較が可能で増減がある動画のみ）")
+    st.caption(f"表示対象: A列の日付が {today_jst.strftime('%Y/%m/%d')} の行（前日データがない動画は0件基準で増減表示）")
 
     if not diff_rows:
-        st.info("本日更新分で、前日比較できるデータはありません。")
+        st.info("本日更新分で、増減のあるデータはありません。")
         return
 
     table_html = [
