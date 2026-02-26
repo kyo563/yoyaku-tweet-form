@@ -2,7 +2,7 @@ import re
 import unicodedata
 import uuid
 import csv
-import html
+import html as html_lib
 from dataclasses import dataclass
 from datetime import date, datetime, timezone, timedelta
 from typing import List, Optional
@@ -10,7 +10,7 @@ from typing import List, Optional
 import json
 from urllib.request import urlopen
 import streamlit as st
-from streamlit.components.v1 import html
+from streamlit.components.v1 import html as st_html
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
@@ -296,10 +296,10 @@ def render_latest_video_status_tab() -> None:
     ]
 
     for row in today_rows:
-        safe_title = html.escape(row.title)
+        safe_title = html_lib.escape(row.title)
         title_html = safe_title
         if row.url:
-            safe_url = html.escape(row.url, quote=True)
+            safe_url = html_lib.escape(row.url, quote=True)
             title_html = (
                 f"<a href='{safe_url}' target='_blank' rel='noopener noreferrer'>{safe_title}</a>"
             )
@@ -1126,7 +1126,7 @@ def render_reservation_form():
       <span style="font-size:14px;color:#666;"> → ホームからプロフィールへ進んで予約投稿してください。</span>
     </div>
     """
-    html(buttons_html, height=120)
+    st_html(buttons_html, height=120)
 
     st.markdown("#### 👀 プレビュー")
     st.info(build_next_week_comment())
