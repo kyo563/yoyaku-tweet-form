@@ -365,9 +365,8 @@ def render_latest_video_status_tab() -> None:
             continue
         diff_rows.append((row, likes_diff, comments_diff))
 
-    st.caption("通常は毎日 9:00（JST）を境に再取得されるようキャッシュキーを切り替えています。")
-    st.caption("今すぐ同期したい場合は、上の「最新情報に更新」ボタンを押してください。")
-    st.caption(f"表示対象: A列の日付が {today_jst.strftime('%Y/%m/%d')} の行（前日データがない動画は0件基準で増減表示）")
+    st.caption("毎日 9:00（JST）時点での高評価/コメント増加数を取得しています。")
+    st.caption("最新から最大50件までの動画の中で更新のあったもののみピックしていますので、それより古い動画については対象外です。")
 
     if not diff_rows:
         st.info("本日更新分で、増減のあるデータはありません。")
