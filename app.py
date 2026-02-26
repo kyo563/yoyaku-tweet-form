@@ -1,6 +1,7 @@
 import re
 import unicodedata
 import uuid
+import csv
 from dataclasses import dataclass
 from datetime import date, datetime, timezone, timedelta
 from typing import List, Optional
@@ -23,6 +24,8 @@ SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
 ]
 SPREADSHEET_ID = "1t34GoYFFHJdCsIjvbSGLEfD7W-cfeDgyAQoh9_u-oUU"  # 共有シートID
+VIDEO_STATUS_SHEET_ID = "1j-XSXvaYnQ_lTdpBlwFX3ibfvCaj2rs3B8Y7VaSuh4Y"
+VIDEO_STATUS_GID = "0"
 
 # X(Twitter) のURL換算は https の場合 23 文字（公式仕様）
 URL_UNITS = 23
@@ -50,6 +53,16 @@ class Video:
     def normal_url(self) -> str:
         # 生成URLはすべて youtu.be に統一（?si=無し）
         return f"https://youtu.be/{self.video_id}"
+
+
+@dataclass
+class DailyVideoStatus:
+    updated_at: datetime
+    post_at: datetime
+    title: str
+    url: str
+    likes: int
+    comments: int
 
 
 # ==============================
@@ -166,6 +179,122 @@ def fetch_japanese_holidays() -> dict[str, str]:
     except Exception:
         pass
     return {}
+
+
+def parse_sheet_datetime(raw: str) -> Optional[datetime]:
+    if not raw:
+        return None
+    txt = raw.strip()
+    for fmt in ("%Y/%m/%d %H:%M:%S", "%Y/%m/%d %H:%M", "%Y/%m/%d"):
+        try:
+            return datetime.strptime(txt, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def parse_title_and_url(raw: str) -> tuple[str, str]:
+    if not raw:
+        return "", ""
+    m = re.search(r"https?://\S+", raw)
+    if not m:
+        return raw.strip(), ""
+    url = m.group(0).rstrip(")],.\"'")
+    title = (raw[:m.start()] + raw[m.end():]).strip(" -\n\t")
+    if not title:
+        title = url
+    return title, url
+
+
+def parse_int(raw: str) -> int:
+    if not raw:
+        return 0
+    digits = re.sub(r"[^0-9]", "", str(raw))
+    return int(digits) if digits else 0
+
+
+@st.cache_data(show_spinner=False)
+def fetch_record_rows_cached(cache_key: str) -> List[DailyVideoStatus]:
+    _ = cache_key
+    url = (
+        f"https://docs.google.com/spreadsheets/d/{VIDEO_STATUS_SHEET_ID}/export"
+        f"?format=csv&gid={VIDEO_STATUS_GID}"
+    )
+    with urlopen(url, timeout=10) as res:
+        body = res.read().decode("utf-8")
+
+    rows: List[DailyVideoStatus] = []
+    reader = csv.reader(body.splitlines())
+    next(reader, None)
+    for row in reader:
+        updated_at = parse_sheet_datetime(row[0] if len(row) > 0 else "")
+        post_at = parse_sheet_datetime(row[3] if len(row) > 3 else "")
+        if not updated_at or not post_at:
+            continue
+
+        title, link = parse_title_and_url(row[2] if len(row) > 2 else "")
+        rows.append(
+            DailyVideoStatus(
+                updated_at=updated_at,
+                post_at=post_at,
+                title=title,
+                url=link,
+                likes=parse_int(row[6] if len(row) > 6 else ""),
+                comments=parse_int(row[7] if len(row) > 7 else ""),
+            )
+        )
+    return rows
+
+
+def render_latest_video_status_tab() -> None:
+    now_jst = datetime.now(timezone(timedelta(hours=9)))
+    if now_jst.hour >= 9:
+        cache_key = now_jst.strftime("%Y-%m-%d")
+    else:
+        cache_key = (now_jst - timedelta(days=1)).strftime("%Y-%m-%d")
+
+    try:
+        records = fetch_record_rows_cached(cache_key)
+    except Exception as e:
+        st.error(f"recordシートの取得に失敗しました: {e}")
+        return
+
+    today_jst = now_jst.date()
+    today_rows = [r for r in records if r.updated_at.date() == today_jst]
+    today_rows.sort(key=lambda r: r.post_at)
+
+    st.caption("毎日 9:00（JST）を境に再取得されるようキャッシュキーを切り替えています。")
+    st.caption(f"表示対象: A列の日付が {today_jst.strftime('%Y/%m/%d')} の行")
+
+    if not today_rows:
+        st.info("本日更新分のデータはまだありません。")
+        return
+
+    table_html = [
+        "<table style='width:100%; border-collapse: collapse;'>",
+        "<thead><tr>",
+        "<th style='text-align:left;border-bottom:1px solid #ddd;padding:8px;'>動画タイトル</th>",
+        "<th style='text-align:right;border-bottom:1px solid #ddd;padding:8px;'>高評価</th>",
+        "<th style='text-align:right;border-bottom:1px solid #ddd;padding:8px;'>コメント</th>",
+        "</tr></thead><tbody>",
+    ]
+
+    for row in today_rows:
+        title_html = row.title
+        if row.url:
+            title_html = (
+                f"<a href='{row.url}' target='_blank' rel='noopener noreferrer'>{row.title}</a>"
+            )
+        table_html.append(
+            "<tr>"
+            f"<td style='border-bottom:1px solid #f0f0f0;padding:8px;'>{title_html}</td>"
+            f"<td style='text-align:right;border-bottom:1px solid #f0f0f0;padding:8px;'>{row.likes:,}</td>"
+            f"<td style='text-align:right;border-bottom:1px solid #f0f0f0;padding:8px;'>{row.comments:,}</td>"
+            "</tr>"
+        )
+
+    table_html.append("</tbody></table>")
+    st.markdown("".join(table_html), unsafe_allow_html=True)
 
 
 def build_next_week_comment(base_date: Optional[date] = None) -> str:
@@ -599,10 +728,7 @@ def next_template_id(existing: List[Template]) -> str:
 # アプリ本体
 # ==============================
 
-def main():
-    st.set_page_config(page_title="予約投稿作成フォーム", layout="wide")
-    st.title("📝 予約投稿作成フォーム（YouTube×X）")
-
+def render_reservation_form():
     st.markdown(
         "<style>div[data-testid='stExpander']{margin-bottom:0.75rem}</style>",
         unsafe_allow_html=True,
@@ -986,6 +1112,17 @@ def main():
 
     st.markdown("#### 👀 プレビュー")
     st.info(build_next_week_comment())
+
+
+def main():
+    st.set_page_config(page_title="予約投稿作成フォーム", layout="wide")
+    st.title("📝 予約投稿作成フォーム（YouTube×X）")
+
+    tab_form, tab_status = st.tabs(["予約ツイートフォーム", "最新動画状況"])
+    with tab_form:
+        render_reservation_form()
+    with tab_status:
+        render_latest_video_status_tab()
 
 
 if __name__ == "__main__":
