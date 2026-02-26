@@ -2,6 +2,7 @@ import re
 import unicodedata
 import uuid
 import csv
+import html
 from dataclasses import dataclass
 from datetime import date, datetime, timezone, timedelta
 from typing import List, Optional
@@ -265,7 +266,17 @@ def render_latest_video_status_tab() -> None:
 
     today_jst = now_jst.date()
     today_rows = [r for r in records if r.updated_at.date() == today_jst]
-    today_rows.sort(key=lambda r: r.post_at)
+
+    # 同じ動画の複数行（途中経過の更新）を 1 行にまとめる。
+    # URL がある場合は URL をキーにし、ない場合はタイトル＋投稿日時で近似する。
+    deduped: dict[str, DailyVideoStatus] = {}
+    for row in today_rows:
+        key = row.url or f"{row.title}::{row.post_at.isoformat()}"
+        prev = deduped.get(key)
+        if prev is None or row.updated_at > prev.updated_at:
+            deduped[key] = row
+
+    today_rows = sorted(deduped.values(), key=lambda r: r.post_at)
 
     st.caption("通常は毎日 9:00（JST）を境に再取得されるようキャッシュキーを切り替えています。")
     st.caption("今すぐ同期したい場合は、上の「最新情報に更新」ボタンを押してください。")
@@ -285,10 +296,12 @@ def render_latest_video_status_tab() -> None:
     ]
 
     for row in today_rows:
-        title_html = row.title
+        safe_title = html.escape(row.title)
+        title_html = safe_title
         if row.url:
+            safe_url = html.escape(row.url, quote=True)
             title_html = (
-                f"<a href='{row.url}' target='_blank' rel='noopener noreferrer'>{row.title}</a>"
+                f"<a href='{safe_url}' target='_blank' rel='noopener noreferrer'>{safe_title}</a>"
             )
         table_html.append(
             "<tr>"
