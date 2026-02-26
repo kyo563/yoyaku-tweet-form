@@ -327,57 +327,61 @@ def render_latest_video_status_tab() -> None:
         st.error(f"recordシートの取得に失敗しました: {e}")
         return
 
-    today_jst = now_jst.date()
-    yesterday_jst = today_jst - timedelta(days=1)
-    today_rows = [r for r in records if r.updated_at.date() == today_jst]
-    yesterday_rows = [r for r in records if r.updated_at.date() == yesterday_jst]
+    if not records:
+        st.info("表示できる動画データがありません。")
+        return
 
-    # 同じ動画の複数行（途中経過の更新）を 1 行にまとめる。
-    # URL がある場合は URL をキーにし、ない場合はタイトル＋投稿日時で近似する。
-    deduped: dict[str, DailyVideoStatus] = {}
-    for row in today_rows:
+    target_date = (now_jst - timedelta(days=7)).date()
+
+    grouped: dict[str, list[DailyVideoStatus]] = {}
+    for row in records:
         key = row.url or f"{row.title}::{row.post_at.isoformat()}"
-        prev = deduped.get(key)
-        if prev is None or row.updated_at > prev.updated_at:
-            deduped[key] = row
-
-    today_rows = sorted(deduped.values(), key=lambda r: r.post_at)
-
-    yesterday_deduped: dict[str, DailyVideoStatus] = {}
-    for row in yesterday_rows:
-        key = row.url or f"{row.title}::{row.post_at.isoformat()}"
-        prev = yesterday_deduped.get(key)
-        if prev is None or row.updated_at > prev.updated_at:
-            yesterday_deduped[key] = row
+        grouped.setdefault(key, []).append(row)
 
     diff_rows: list[tuple[DailyVideoStatus, int, int]] = []
-    for row in today_rows:
-        key = row.url or f"{row.title}::{row.post_at.isoformat()}"
-        prev_row = yesterday_deduped.get(key)
-        if prev_row is None:
-            likes_diff = row.likes
-            comments_diff = row.comments
-        else:
-            likes_diff = row.likes - prev_row.likes
-            comments_diff = row.comments - prev_row.comments
-        # 高評価・コメントの両方が増減なしの動画は表示しない
-        if likes_diff == 0 and comments_diff == 0:
-            continue
-        diff_rows.append((row, likes_diff, comments_diff))
+    for row_list in grouped.values():
+        sorted_rows = sorted(row_list, key=lambda r: r.updated_at)
+        latest_row = sorted_rows[-1]
 
-    st.caption("毎日 9:00（JST）時点での高評価/コメント増加数を取得しています。")
-    st.caption("最新から最大50件までの動画の中で更新のあったもののみピックしていますので、それより古い動画については対象外です。")
+        base_row = None
+        for candidate in reversed(sorted_rows):
+            if candidate.updated_at.date() <= target_date:
+                base_row = candidate
+                break
+
+        if base_row is None:
+            likes_diff = latest_row.likes
+            comments_diff = latest_row.comments
+        else:
+            likes_diff = latest_row.likes - base_row.likes
+            comments_diff = latest_row.comments - base_row.comments
+
+        if comments_diff <= 0:
+            continue
+
+        diff_rows.append((latest_row, likes_diff, comments_diff))
+
+    diff_rows.sort(key=lambda x: x[2], reverse=True)
+
+    st.caption("毎日 9:00（JST）時点で取得した記録を使い、最新値と7日前時点の差分を表示しています。")
+    st.caption("週末のみ確認する運用でも、1週間でコメントが増えた動画を見つけやすくするための一覧です。")
 
     if not diff_rows:
-        st.info("本日更新分で、増減のあるデータはありません。")
+        st.success("直近1週間でコメント増加のある動画はありません。")
         return
+
+    total_comment_increase = sum(comments_diff for _, _, comments_diff in diff_rows)
+    st.metric("要確認動画数（直近1週間でコメント増加）", len(diff_rows))
+    st.metric("コメント増加合計（直近1週間）", f"+{total_comment_increase:,}")
 
     table_html = [
         "<table style='width:100%; border-collapse: collapse;'>",
         "<thead><tr>",
         "<th style='text-align:left;border-bottom:1px solid #ddd;padding:8px;'>動画タイトル</th>",
-        "<th style='text-align:right;border-bottom:1px solid #ddd;padding:8px;'>追加高評価数</th>",
-        "<th style='text-align:right;border-bottom:1px solid #ddd;padding:8px;'>追加コメント数</th>",
+        "<th style='text-align:right;border-bottom:1px solid #ddd;padding:8px;'>7日間の高評価増加</th>",
+        "<th style='text-align:right;border-bottom:1px solid #ddd;padding:8px;'>7日間のコメント増加</th>",
+        "<th style='text-align:right;border-bottom:1px solid #ddd;padding:8px;'>現在コメント総数</th>",
+        "<th style='text-align:right;border-bottom:1px solid #ddd;padding:8px;'>最終更新日</th>",
         "</tr></thead><tbody>",
     ]
 
@@ -394,6 +398,8 @@ def render_latest_video_status_tab() -> None:
             f"<td style='border-bottom:1px solid #f0f0f0;padding:8px;'>{title_html}</td>"
             f"<td style='text-align:right;border-bottom:1px solid #f0f0f0;padding:8px;'>{likes_diff:+,}</td>"
             f"<td style='text-align:right;border-bottom:1px solid #f0f0f0;padding:8px;'>{comments_diff:+,}</td>"
+            f"<td style='text-align:right;border-bottom:1px solid #f0f0f0;padding:8px;'>{row.comments:,}</td>"
+            f"<td style='text-align:right;border-bottom:1px solid #f0f0f0;padding:8px;'>{row.updated_at.strftime('%Y-%m-%d')}</td>"
             "</tr>"
         )
 
