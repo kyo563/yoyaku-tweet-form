@@ -247,6 +247,10 @@ def fetch_record_rows_cached(cache_key: str) -> List[DailyVideoStatus]:
 
 
 def render_latest_video_status_tab() -> None:
+    if st.button("最新情報に更新", key="refresh_latest_video_status"):
+        fetch_record_rows_cached.clear()
+        st.success("最新動画状況を再取得しました。")
+
     now_jst = datetime.now(timezone(timedelta(hours=9)))
     if now_jst.hour >= 9:
         cache_key = now_jst.strftime("%Y-%m-%d")
@@ -263,7 +267,8 @@ def render_latest_video_status_tab() -> None:
     today_rows = [r for r in records if r.updated_at.date() == today_jst]
     today_rows.sort(key=lambda r: r.post_at)
 
-    st.caption("毎日 9:00（JST）を境に再取得されるようキャッシュキーを切り替えています。")
+    st.caption("通常は毎日 9:00（JST）を境に再取得されるようキャッシュキーを切り替えています。")
+    st.caption("今すぐ同期したい場合は、上の「最新情報に更新」ボタンを押してください。")
     st.caption(f"表示対象: A列の日付が {today_jst.strftime('%Y/%m/%d')} の行")
 
     if not today_rows:
