@@ -302,7 +302,9 @@ def render_latest_video_status_tab() -> None:
         return
 
     today_jst = now_jst.date()
+    yesterday_jst = today_jst - timedelta(days=1)
     today_rows = [r for r in records if r.updated_at.date() == today_jst]
+    yesterday_rows = [r for r in records if r.updated_at.date() == yesterday_jst]
 
     # 同じ動画の複数行（途中経過の更新）を 1 行にまとめる。
     # URL がある場合は URL をキーにし、ない場合はタイトル＋投稿日時で近似する。
@@ -315,24 +317,39 @@ def render_latest_video_status_tab() -> None:
 
     today_rows = sorted(deduped.values(), key=lambda r: r.post_at)
 
+    yesterday_deduped: dict[str, DailyVideoStatus] = {}
+    for row in yesterday_rows:
+        key = row.url or f"{row.title}::{row.post_at.isoformat()}"
+        prev = yesterday_deduped.get(key)
+        if prev is None or row.updated_at > prev.updated_at:
+            yesterday_deduped[key] = row
+
+    diff_rows: list[tuple[DailyVideoStatus, int, int]] = []
+    for row in today_rows:
+        key = row.url or f"{row.title}::{row.post_at.isoformat()}"
+        prev_row = yesterday_deduped.get(key)
+        if prev_row is None:
+            continue
+        diff_rows.append((row, row.likes - prev_row.likes, row.comments - prev_row.comments))
+
     st.caption("通常は毎日 9:00（JST）を境に再取得されるようキャッシュキーを切り替えています。")
     st.caption("今すぐ同期したい場合は、上の「最新情報に更新」ボタンを押してください。")
-    st.caption(f"表示対象: A列の日付が {today_jst.strftime('%Y/%m/%d')} の行")
+    st.caption(f"表示対象: A列の日付が {today_jst.strftime('%Y/%m/%d')} の行（前日比較が可能な動画のみ）")
 
-    if not today_rows:
-        st.info("本日更新分のデータはまだありません。")
+    if not diff_rows:
+        st.info("本日更新分で、前日比較できるデータはありません。")
         return
 
     table_html = [
         "<table style='width:100%; border-collapse: collapse;'>",
         "<thead><tr>",
         "<th style='text-align:left;border-bottom:1px solid #ddd;padding:8px;'>動画タイトル</th>",
-        "<th style='text-align:right;border-bottom:1px solid #ddd;padding:8px;'>高評価</th>",
-        "<th style='text-align:right;border-bottom:1px solid #ddd;padding:8px;'>コメント</th>",
+        "<th style='text-align:right;border-bottom:1px solid #ddd;padding:8px;'>追加高評価数</th>",
+        "<th style='text-align:right;border-bottom:1px solid #ddd;padding:8px;'>追加コメント数</th>",
         "</tr></thead><tbody>",
     ]
 
-    for row in today_rows:
+    for row, likes_diff, comments_diff in diff_rows:
         safe_title = html_lib.escape(row.title)
         title_html = safe_title
         if row.url:
@@ -343,8 +360,8 @@ def render_latest_video_status_tab() -> None:
         table_html.append(
             "<tr>"
             f"<td style='border-bottom:1px solid #f0f0f0;padding:8px;'>{title_html}</td>"
-            f"<td style='text-align:right;border-bottom:1px solid #f0f0f0;padding:8px;'>{row.likes:,}</td>"
-            f"<td style='text-align:right;border-bottom:1px solid #f0f0f0;padding:8px;'>{row.comments:,}</td>"
+            f"<td style='text-align:right;border-bottom:1px solid #f0f0f0;padding:8px;'>{likes_diff:+,}</td>"
+            f"<td style='text-align:right;border-bottom:1px solid #f0f0f0;padding:8px;'>{comments_diff:+,}</td>"
             "</tr>"
         )
 
