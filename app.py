@@ -330,11 +330,16 @@ def render_latest_video_status_tab() -> None:
         prev_row = yesterday_deduped.get(key)
         if prev_row is None:
             continue
-        diff_rows.append((row, row.likes - prev_row.likes, row.comments - prev_row.comments))
+        likes_diff = row.likes - prev_row.likes
+        comments_diff = row.comments - prev_row.comments
+        # 高評価・コメントの両方が増減なしの動画は表示しない
+        if likes_diff == 0 and comments_diff == 0:
+            continue
+        diff_rows.append((row, likes_diff, comments_diff))
 
     st.caption("通常は毎日 9:00（JST）を境に再取得されるようキャッシュキーを切り替えています。")
     st.caption("今すぐ同期したい場合は、上の「最新情報に更新」ボタンを押してください。")
-    st.caption(f"表示対象: A列の日付が {today_jst.strftime('%Y/%m/%d')} の行（前日比較が可能な動画のみ）")
+    st.caption(f"表示対象: A列の日付が {today_jst.strftime('%Y/%m/%d')} の行（前日比較が可能で増減がある動画のみ）")
 
     if not diff_rows:
         st.info("本日更新分で、前日比較できるデータはありません。")
