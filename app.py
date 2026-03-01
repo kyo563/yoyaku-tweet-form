@@ -527,6 +527,17 @@ def create_flow() -> Flow:
     return flow
 
 
+def create_flow_with_code_verifier(code_verifier: Optional[str]) -> Flow:
+    flow = Flow.from_client_config(
+        client_config=get_client_config(),
+        scopes=SCOPES,
+        redirect_uri=st.secrets["google_oauth"]["redirect_uri"],
+        code_verifier=code_verifier,
+        autogenerate_code_verifier=(code_verifier is None),
+    )
+    return flow
+
+
 def handle_oauth_callback():
     # Streamlit 1.30+ では experimental_get_query_params が廃止されたため、
     # 新旧 API の両方に対応する。
@@ -539,9 +550,25 @@ def handle_oauth_callback():
     code = params.get("code", [None])[0]
     if not code:
         return
-    flow = create_flow()
-    flow.fetch_token(code=code)
+
+    returned_state = params.get("state", [None])[0]
+    expected_state = st.session_state.get("oauth_state")
+    if expected_state and returned_state and returned_state != expected_state:
+        st.error("OAuth認証に失敗しました。もう一度Google連携を実行してください。")
+        return
+
+    code_verifier = st.session_state.get("oauth_code_verifier")
+    flow = create_flow_with_code_verifier(code_verifier)
+
+    try:
+        flow.fetch_token(code=code)
+    except Exception as e:
+        st.error(f"Google認証に失敗しました: {e}")
+        return
+
     st.session_state["google_creds"] = flow.credentials
+    st.session_state.pop("oauth_state", None)
+    st.session_state.pop("oauth_code_verifier", None)
     if hasattr(st, "query_params"):
         st.query_params.clear()
     else:
@@ -551,11 +578,13 @@ def handle_oauth_callback():
 
 def start_google_oauth():
     flow = create_flow()
-    auth_url, _ = flow.authorization_url(
+    auth_url, state = flow.authorization_url(
         access_type="offline",
         include_granted_scopes="true",
         prompt="consent",
     )
+    st.session_state["oauth_state"] = state
+    st.session_state["oauth_code_verifier"] = flow.code_verifier
     st.markdown(f"[Googleアカウントで連携する]({auth_url})")
 
 
