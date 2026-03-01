@@ -1,8 +1,10 @@
 import re
 import unicodedata
 import uuid
+import secrets
 import csv
 import html as html_lib
+import base64
 from dataclasses import dataclass
 from datetime import date, datetime, timezone, timedelta
 from typing import List, Optional
@@ -538,6 +540,23 @@ def create_flow_with_code_verifier(code_verifier: Optional[str]) -> Flow:
     return flow
 
 
+def build_oauth_state(csrf_token: str, code_verifier: str) -> str:
+    payload = {"csrf": csrf_token, "cv": code_verifier}
+    raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("utf-8")
+
+
+def parse_oauth_state(state: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+    if not state:
+        return None, None
+    try:
+        padded = state + "=" * (-len(state) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded.encode("utf-8")))
+    except Exception:
+        return state, None
+    return payload.get("csrf"), payload.get("cv")
+
+
 def handle_oauth_callback():
     # Streamlit 1.30+ では experimental_get_query_params が廃止されたため、
     # 新旧 API の両方に対応する。
@@ -552,12 +571,16 @@ def handle_oauth_callback():
         return
 
     returned_state = params.get("state", [None])[0]
+    returned_csrf, state_code_verifier = parse_oauth_state(returned_state)
     expected_state = st.session_state.get("oauth_state")
-    if expected_state and returned_state and returned_state != expected_state:
+    if expected_state and returned_csrf and returned_csrf != expected_state:
         st.error("OAuth認証に失敗しました。もう一度Google連携を実行してください。")
         return
 
-    code_verifier = st.session_state.get("oauth_code_verifier")
+    code_verifier = st.session_state.get("oauth_code_verifier") or state_code_verifier
+    if not code_verifier:
+        st.error("Google認証に失敗しました。もう一度Google連携を実行してください。")
+        return
     flow = create_flow_with_code_verifier(code_verifier)
 
     try:
@@ -577,14 +600,18 @@ def handle_oauth_callback():
 
 
 def start_google_oauth():
-    flow = create_flow()
+    code_verifier = secrets.token_urlsafe(64)
+    csrf_token = uuid.uuid4().hex
+    state = build_oauth_state(csrf_token, code_verifier)
+    flow = create_flow_with_code_verifier(code_verifier)
     auth_url, state = flow.authorization_url(
         access_type="offline",
         include_granted_scopes="true",
         prompt="consent",
+        state=state,
     )
-    st.session_state["oauth_state"] = state
-    st.session_state["oauth_code_verifier"] = flow.code_verifier
+    st.session_state["oauth_state"] = csrf_token
+    st.session_state["oauth_code_verifier"] = code_verifier
     st.markdown(f"[Googleアカウントで連携する]({auth_url})")
 
 
