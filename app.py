@@ -395,12 +395,15 @@ def render_latest_video_status_tab() -> None:
             title_html = (
                 f"<a href='{safe_url}' target='_blank' rel='noopener noreferrer'>{safe_title}</a>"
             )
+        comments_cell_style = "text-align:right;border-bottom:1px solid #f0f0f0;padding:8px;"
+        if row.comments % 2 == 1:
+            comments_cell_style += "background-color:#e8f4ff;"
         table_html.append(
             "<tr>"
             f"<td style='border-bottom:1px solid #f0f0f0;padding:8px;'>{title_html}</td>"
             f"<td style='text-align:right;border-bottom:1px solid #f0f0f0;padding:8px;'>{likes_diff:+,}</td>"
             f"<td style='text-align:right;border-bottom:1px solid #f0f0f0;padding:8px;'>{comments_diff:+,}</td>"
-            f"<td style='text-align:right;border-bottom:1px solid #f0f0f0;padding:8px;'>{row.comments:,}</td>"
+            f"<td style='{comments_cell_style}'>{row.comments:,}</td>"
             f"<td style='text-align:right;border-bottom:1px solid #f0f0f0;padding:8px;'>{row.updated_at.strftime('%Y-%m-%d')}</td>"
             "</tr>"
         )
