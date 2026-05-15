@@ -54,8 +54,8 @@ class Video:
 
     @property
     def normal_url(self) -> str:
-        # 生成URLはすべて youtu.be に統一（?si=無し）
-        return f"https://youtu.be/{self.video_id}"
+        # 生成URLは shorts URL に統一（?si=無し）
+        return f"https://youtube.com/shorts/{self.video_id}"
 
 
 @dataclass
@@ -1177,7 +1177,7 @@ def render_reservation_form():
             st.markdown("**予約済みの公開日時**（m月d日(曜) 形式で入ります。例：11月12日(水)）")
             st.code("{publish_at}", language=None)
 
-            st.markdown("**共有URL（youtu.be / ?si=無し）**")
+            st.markdown("**共有URL（youtube.com/shorts / ?si=無し）**")
             st.code("{URL}", language=None)
 
             st.caption("※旧テンプレの {SHORTS} / {url} は内部で {URL} に自動変換して生成します。")
