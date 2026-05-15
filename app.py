@@ -57,6 +57,10 @@ class Video:
         # 生成URLは shorts URL に統一（?si=無し）
         return f"https://youtube.com/shorts/{self.video_id}"
 
+    @property
+    def youtube_url(self) -> str:
+        return f"https://www.youtube.com/watch?v={self.video_id}"
+
 
 @dataclass
 class DailyVideoStatus:
@@ -475,23 +479,31 @@ def prioritize_and_fit(
 
 def sanitize_template_body(template_body: str) -> str:
     """
-    {SHORTS} / {url} は廃止。
-    既存テンプレ互換のため、読み込み/生成時に {URL} へ自動変換する。
+    旧プレースホルダの互換変換。
+    - {url} / {SHORTS} -> {SHORTS_URL}
+    - {URL} -> {SHORTS_URL}（旧テンプレ互換）
     """
     if not template_body:
         return template_body
     return (
         template_body
-        .replace("{SHORTS}", "{URL}")
-        .replace("{url}", "{URL}")
+        .replace("{SHORTS}", "{SHORTS_URL}")
+        .replace("{url}", "{SHORTS_URL}")
+        .replace("{URL}", "{SHORTS_URL}")
     )
 
 
 def build_tweet_from_template(template_body: str, video: Video, snippet: str, max_units: int = 280) -> str:
     """
     テンプレに差し込み後、そのまま返す。
-    {title} / {snippet} / {publish_at} / {URL} のみを正式サポートする。
-    {SHORTS} / {url} は混乱回避のため廃止し、内部で {URL} に自動変換して互換だけ維持する。
+    正式サポート:
+    - {title}
+    - {snippet}
+    - {publish_at}
+    - {YOUTUBE_URL}（通常動画URL）
+    - {SHORTS_URL}（ショートURL）
+    互換:
+    - {URL} / {SHORTS} / {url} は {SHORTS_URL} として扱う。
     """
     publish_at_pretty = format_publish_at_pretty(video.publish_at_utc)
 
@@ -501,7 +513,8 @@ def build_tweet_from_template(template_body: str, video: Video, snippet: str, ma
         title=video.title,
         snippet=snippet,
         publish_at=publish_at_pretty,
-        URL=video.normal_url,
+        SHORTS_URL=video.normal_url,
+        YOUTUBE_URL=video.youtube_url,
     )
     return raw
 
@@ -807,13 +820,13 @@ def default_templates() -> List[Template]:
         Template(
             id="1",
             name="シンプルなお知らせ",
-            body="【新着】{title}\n\n{snippet}\n\n▼動画はこちら\n{URL}",
+            body="【新着】{title}\n\n{snippet}\n\n▼動画はこちら\n{SHORTS_URL}",
             is_default=True
         ),
         Template(
             id="2",
             name="丁寧めなお知らせ",
-            body="本日 {publish_at} に動画を公開予定です。\n\n{snippet}\n\n{URL}",
+            body="本日 {publish_at} に動画を公開予定です。\n\n{snippet}\n\n{SHORTS_URL}",
             is_default=False
         ),
     ]
@@ -1049,7 +1062,8 @@ def render_reservation_form():
     with col_time:
         st.write(f"**公開予定日時：** {format_publish_at_with_weekday(current_video.publish_at_utc)}")
 
-    st.write(f"**共有URL（{ '{URL}' }）：** {current_video.normal_url}")
+    st.write(f"**ショートURL（{ '{SHORTS_URL}' }）：** {current_video.normal_url}")
+    st.write(f"**通常動画URL（{ '{YOUTUBE_URL}' }）：** {current_video.youtube_url}")
 
     # 概要欄（全文をプレビュー）
     with st.expander("概要欄を確認する"):
@@ -1177,10 +1191,12 @@ def render_reservation_form():
             st.markdown("**予約済みの公開日時**（m月d日(曜) 形式で入ります。例：11月12日(水)）")
             st.code("{publish_at}", language=None)
 
-            st.markdown("**共有URL（youtube.com/shorts / ?si=無し）**")
-            st.code("{URL}", language=None)
+            st.markdown("**ショートURL（youtube.com/shorts / ?si=無し）**")
+            st.code("{SHORTS_URL}", language=None)
 
-            st.caption("※旧テンプレの {SHORTS} / {url} は内部で {URL} に自動変換して生成します。")
+            st.markdown("**通常動画URL（youtube.com/watch）**")
+            st.code("{YOUTUBE_URL}", language=None)
+            st.caption("※旧テンプレの {URL} / {SHORTS} / {url} は内部で {SHORTS_URL} に変換して生成します。")
 
     # ===== ツイート本文 =====
 
@@ -1191,7 +1207,8 @@ def render_reservation_form():
         st.write(f"**動画タイトル：** {current_video.title}")
     with col_conf_time:
         st.write(f"**公開予定日時：** {format_publish_at_with_weekday(current_video.publish_at_utc)}")
-    st.write(f"**共有URL：** {current_video.normal_url}")
+    st.write(f"**ショートURL：** {current_video.normal_url}")
+    st.write(f"**通常動画URL：** {current_video.youtube_url}")
 
     # 見出し
     st.markdown("#### ✏️ 投稿本文（ここで自由に編集できます）")
