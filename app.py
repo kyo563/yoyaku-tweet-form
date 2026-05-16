@@ -53,8 +53,11 @@ class Video:
     publish_at_utc: datetime
 
     @property
-    def normal_url(self) -> str:
-        # 生成URLは shorts URL に統一（?si=無し）
+    def URL(self) -> str:
+        return f"https://youtu.be/{self.video_id}"
+
+    @property
+    def short_url(self) -> str:
         return f"https://youtube.com/shorts/{self.video_id}"
 
 
@@ -490,7 +493,7 @@ def sanitize_template_body(template_body: str) -> str:
 def build_tweet_from_template(template_body: str, video: Video, snippet: str, max_units: int = 280) -> str:
     """
     テンプレに差し込み後、そのまま返す。
-    {title} / {snippet} / {publish_at} / {URL} のみを正式サポートする。
+    {title} / {snippet} / {publish_at} / {URL} / {SHORT_URL} を正式サポートする。
     {SHORTS} / {url} は混乱回避のため廃止し、内部で {URL} に自動変換して互換だけ維持する。
     """
     publish_at_pretty = format_publish_at_pretty(video.publish_at_utc)
@@ -501,7 +504,8 @@ def build_tweet_from_template(template_body: str, video: Video, snippet: str, ma
         title=video.title,
         snippet=snippet,
         publish_at=publish_at_pretty,
-        URL=video.normal_url,
+        URL=video.URL,
+        SHORT_URL=video.short_url,
     )
     return raw
 
@@ -1049,7 +1053,8 @@ def render_reservation_form():
     with col_time:
         st.write(f"**公開予定日時：** {format_publish_at_with_weekday(current_video.publish_at_utc)}")
 
-    st.write(f"**共有URL（{ '{URL}' }）：** {current_video.normal_url}")
+    st.write(f"**共有URL（{ '{URL}' } / youtu.be）：** {current_video.URL}")
+    st.write(f"**Short URL（{ '{SHORT_URL}' } / youtube.com/shorts）：** {current_video.short_url}")
 
     # 概要欄（全文をプレビュー）
     with st.expander("概要欄を確認する"):
@@ -1177,8 +1182,11 @@ def render_reservation_form():
             st.markdown("**予約済みの公開日時**（m月d日(曜) 形式で入ります。例：11月12日(水)）")
             st.code("{publish_at}", language=None)
 
-            st.markdown("**共有URL（youtube.com/shorts / ?si=無し）**")
+            st.markdown("**共有URL（youtu.be）**")
             st.code("{URL}", language=None)
+
+            st.markdown("**Short URL（youtube.com/shorts / ?si=無し）**")
+            st.code("{SHORT_URL}", language=None)
 
             st.caption("※旧テンプレの {SHORTS} / {url} は内部で {URL} に自動変換して生成します。")
 
@@ -1191,7 +1199,8 @@ def render_reservation_form():
         st.write(f"**動画タイトル：** {current_video.title}")
     with col_conf_time:
         st.write(f"**公開予定日時：** {format_publish_at_with_weekday(current_video.publish_at_utc)}")
-    st.write(f"**共有URL：** {current_video.normal_url}")
+    st.write(f"**共有URL：** {current_video.URL}")
+    st.write(f"**Short URL：** {current_video.short_url}")
 
     # 見出し
     st.markdown("#### ✏️ 投稿本文（ここで自由に編集できます）")
