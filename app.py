@@ -71,6 +71,28 @@ class DailyVideoStatus:
     comments: int
 
 
+def get_video_shared_url(video: Video) -> str:
+    url = getattr(video, "URL", None)
+    if isinstance(url, str) and url:
+        return url
+
+    raw_url = getattr(video, "url", None)
+    if isinstance(raw_url, str) and raw_url:
+        return raw_url
+
+    video_id = getattr(video, "video_id", "")
+    return f"https://youtu.be/{video_id}" if video_id else ""
+
+
+def get_video_short_url(video: Video) -> str:
+    short_url = getattr(video, "short_url", None)
+    if isinstance(short_url, str) and short_url:
+        return short_url
+
+    video_id = getattr(video, "video_id", "")
+    return f"https://youtube.com/shorts/{video_id}" if video_id else ""
+
+
 # ==============================
 # テキスト処理
 # ==============================
@@ -1053,8 +1075,8 @@ def render_reservation_form():
     with col_time:
         st.write(f"**公開予定日時：** {format_publish_at_with_weekday(current_video.publish_at_utc)}")
 
-    st.write(f"**共有URL（{ '{URL}' } / youtu.be）：** {current_video.URL}")
-    st.write(f"**Short URL（{ '{SHORT_URL}' } / youtube.com/shorts）：** {current_video.short_url}")
+    st.write(f"**共有URL（{ '{URL}' } / youtu.be）：** {get_video_shared_url(current_video)}")
+    st.write(f"**Short URL（{ '{SHORT_URL}' } / youtube.com/shorts）：** {get_video_short_url(current_video)}")
 
     # 概要欄（全文をプレビュー）
     with st.expander("概要欄を確認する"):
@@ -1199,8 +1221,8 @@ def render_reservation_form():
         st.write(f"**動画タイトル：** {current_video.title}")
     with col_conf_time:
         st.write(f"**公開予定日時：** {format_publish_at_with_weekday(current_video.publish_at_utc)}")
-    st.write(f"**共有URL：** {current_video.URL}")
-    st.write(f"**Short URL：** {current_video.short_url}")
+    st.write(f"**共有URL：** {get_video_shared_url(current_video)}")
+    st.write(f"**Short URL：** {get_video_short_url(current_video)}")
 
     # 見出し
     st.markdown("#### ✏️ 投稿本文（ここで自由に編集できます）")
