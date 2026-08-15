@@ -193,6 +193,91 @@ def format_publish_at_pretty(dt: datetime, tz_name: str = "Asia/Tokyo") -> str:
     return f"{local.month}月{local.day}日({wd})"
 
 
+def build_two_week_calendar_html(
+    videos: List[Video],
+    base_date: Optional[date] = None,
+    tz_name: str = "Asia/Tokyo",
+) -> str:
+    """今週月曜から2週間分の予約動画カレンダーをHTMLで返す。"""
+    try:
+        from zoneinfo import ZoneInfo
+        local_tz = ZoneInfo(tz_name)
+        today = base_date or datetime.now(local_tz).date()
+    except Exception:
+        local_tz = timezone(timedelta(hours=9))
+        today = base_date or datetime.now(local_tz).date()
+
+    first_day = today - timedelta(days=today.weekday())
+    last_day = first_day + timedelta(days=13)
+    videos_by_date: dict[date, list[tuple[datetime, Video]]] = {}
+
+    for video in videos:
+        local_publish_at = video.publish_at_utc.astimezone(local_tz)
+        publish_date = local_publish_at.date()
+        if first_day <= publish_date <= last_day:
+            videos_by_date.setdefault(publish_date, []).append((local_publish_at, video))
+
+    for daily_videos in videos_by_date.values():
+        daily_videos.sort(key=lambda item: item[0])
+
+    weekday_labels = ["月", "火", "水", "木", "金", "土", "日"]
+    parts = [
+        "<div style='overflow-x:auto;margin-bottom:1.5rem;'>",
+        "<table style='width:100%;min-width:980px;border-collapse:collapse;table-layout:fixed;'>",
+        "<thead><tr>",
+    ]
+    for label in weekday_labels:
+        parts.append(
+            "<th style='padding:8px;border:1px solid #d9d9d9;background:#f5f5f5;"
+            f"text-align:center;'>{label}</th>"
+        )
+    parts.append("</tr></thead><tbody>")
+
+    for week_index in range(2):
+        parts.append("<tr>")
+        for weekday_index in range(7):
+            target_date = first_day + timedelta(days=week_index * 7 + weekday_index)
+            background = "#eaf4ff" if target_date == today else "#ffffff"
+            if target_date < today:
+                background = "#f8f8f8"
+
+            parts.append(
+                f"<td style='height:130px;padding:8px;border:1px solid #d9d9d9;"
+                f"vertical-align:top;background:{background};'>"
+                f"<div style='font-weight:700;margin-bottom:7px;'>{target_date.month}/{target_date.day}</div>"
+            )
+
+            daily_videos = videos_by_date.get(target_date, [])
+            if not daily_videos:
+                parts.append("<div style='color:#aaa;text-align:center;padding-top:22px;'>—</div>")
+            else:
+                for local_publish_at, video in daily_videos:
+                    safe_title = html_lib.escape(video.title)
+                    safe_url = html_lib.escape(get_video_shared_url(video), quote=True)
+                    title_html = safe_title
+                    if safe_url:
+                        title_html = (
+                            f"<a href='{safe_url}' target='_blank' rel='noopener noreferrer' "
+                            f"style='text-decoration:none;'>{safe_title}</a>"
+                        )
+                    parts.append(
+                        "<div style='margin-bottom:8px;line-height:1.35;overflow-wrap:anywhere;'>"
+                        f"<span style='font-size:0.8rem;color:#666;'>{local_publish_at.strftime('%H:%M')}</span><br>"
+                        f"{title_html}</div>"
+                    )
+            parts.append("</td>")
+        parts.append("</tr>")
+
+    parts.append("</tbody></table></div>")
+    return "".join(parts)
+
+
+def render_two_week_calendar(videos: List[Video]) -> None:
+    st.subheader("予約投稿カレンダー（2週間）")
+    st.caption("今週月曜日から翌週日曜日までの予約投稿／配信予定動画です。タイトルをクリックすると再生できます。")
+    st.markdown(build_two_week_calendar_html(videos), unsafe_allow_html=True)
+
+
 def fetch_japanese_holidays() -> dict[str, str]:
     """
     祝日API(holidays-jp)から yyyy-mm-dd: 祝日名 の辞書を取得する。
@@ -924,6 +1009,8 @@ def next_template_id(existing: List[Template]) -> str:
 # ==============================
 
 def render_reservation_form():
+    calendar_placeholder = st.empty()
+
     st.markdown(
         "<style>div[data-testid='stExpander']{margin-bottom:0.75rem}</style>",
         unsafe_allow_html=True,
@@ -1002,6 +1089,10 @@ def render_reservation_form():
             st.error(f"予約動画の取得に失敗しました：{e}")
 
     videos: List[Video] = st.session_state["videos"]
+
+    if videos:
+        with calendar_placeholder.container():
+            render_two_week_calendar(videos)
 
     if not videos:
         st.info("「自分のチャンネルの予約動画リストを取得／更新」ボタンで予約動画リストを取得してください。")
