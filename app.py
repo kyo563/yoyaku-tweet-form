@@ -193,12 +193,14 @@ def format_publish_at_pretty(dt: datetime, tz_name: str = "Asia/Tokyo") -> str:
     return f"{local.month}月{local.day}日({wd})"
 
 
-def build_two_week_calendar_html(
+def build_calendar_html(
     videos: List[Video],
     base_date: Optional[date] = None,
     tz_name: str = "Asia/Tokyo",
+    start_offset_days: int = 0,
+    day_count: int = 14,
 ) -> str:
-    """今週月曜から2週間分の予約動画カレンダーをHTMLで返す。"""
+    """今週月曜を基準に、指定範囲の予約動画カレンダーをHTMLで返す。"""
     try:
         from zoneinfo import ZoneInfo
         local_tz = ZoneInfo(tz_name)
@@ -207,8 +209,9 @@ def build_two_week_calendar_html(
         local_tz = timezone(timedelta(hours=9))
         today = base_date or datetime.now(local_tz).date()
 
-    first_day = today - timedelta(days=today.weekday())
-    last_day = first_day + timedelta(days=13)
+    this_monday = today - timedelta(days=today.weekday())
+    first_day = this_monday + timedelta(days=start_offset_days)
+    last_day = first_day + timedelta(days=day_count - 1)
     videos_by_date: dict[date, list[tuple[datetime, Video]]] = {}
 
     for video in videos:
@@ -233,10 +236,19 @@ def build_two_week_calendar_html(
         )
     parts.append("</tr></thead><tbody>")
 
-    for week_index in range(2):
+    week_count = (day_count + 6) // 7
+    for week_index in range(week_count):
         parts.append("<tr>")
         for weekday_index in range(7):
-            target_date = first_day + timedelta(days=week_index * 7 + weekday_index)
+            day_index = week_index * 7 + weekday_index
+            if day_index >= day_count:
+                parts.append(
+                    "<td style='height:130px;padding:8px;border:1px solid #d9d9d9;"
+                    "vertical-align:top;background:#fafafa;'></td>"
+                )
+                continue
+
+            target_date = first_day + timedelta(days=day_index)
             background = "#eaf4ff" if target_date == today else "#ffffff"
             if target_date < today:
                 background = "#f8f8f8"
@@ -272,10 +284,44 @@ def build_two_week_calendar_html(
     return "".join(parts)
 
 
+def build_two_week_calendar_html(
+    videos: List[Video],
+    base_date: Optional[date] = None,
+    tz_name: str = "Asia/Tokyo",
+) -> str:
+    """今週月曜から2週間分の予約動画カレンダーをHTMLで返す。"""
+    return build_calendar_html(
+        videos,
+        base_date=base_date,
+        tz_name=tz_name,
+        start_offset_days=0,
+        day_count=14,
+    )
+
+
+def build_additional_calendar_html(
+    videos: List[Video],
+    base_date: Optional[date] = None,
+    tz_name: str = "Asia/Tokyo",
+) -> str:
+    """通常表示の翌日から16日分の予約動画カレンダーをHTMLで返す。"""
+    return build_calendar_html(
+        videos,
+        base_date=base_date,
+        tz_name=tz_name,
+        start_offset_days=14,
+        day_count=16,
+    )
+
+
 def render_two_week_calendar(videos: List[Video]) -> None:
     st.subheader("予約投稿カレンダー（2週間）")
     st.caption("今週月曜日から翌週日曜日までの予約投稿／配信予定動画です。タイトルをクリックすると再生できます。")
     st.markdown(build_two_week_calendar_html(videos), unsafe_allow_html=True)
+
+    with st.expander("さらに16日分を表示（合計30日分）", expanded=False):
+        st.caption("通常表示の翌日から16日分の予約投稿／配信予定動画です。")
+        st.markdown(build_additional_calendar_html(videos), unsafe_allow_html=True)
 
 
 def fetch_japanese_holidays() -> dict[str, str]:
