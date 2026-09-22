@@ -299,29 +299,28 @@ def build_two_week_calendar_html(
     )
 
 
-def build_additional_calendar_html(
-    videos: List[Video],
-    base_date: Optional[date] = None,
-    tz_name: str = "Asia/Tokyo",
-) -> str:
-    """通常表示の翌日から16日分の予約動画カレンダーをHTMLで返す。"""
-    return build_calendar_html(
-        videos,
-        base_date=base_date,
-        tz_name=tz_name,
-        start_offset_days=14,
-        day_count=16,
-    )
-
-
 def render_two_week_calendar(videos: List[Video]) -> None:
-    st.subheader("予約投稿カレンダー（2週間）")
-    st.caption("今週月曜日から翌週日曜日までの予約投稿／配信予定動画です。タイトルをクリックすると再生できます。")
-    st.markdown(build_two_week_calendar_html(videos), unsafe_allow_html=True)
+    state_key = "show_thirty_day_calendar"
+    st.session_state.setdefault(state_key, False)
+    show_thirty_days = bool(st.session_state[state_key])
 
-    with st.expander("さらに16日分を表示（合計30日分）", expanded=False):
-        st.caption("通常表示の翌日から16日分の予約投稿／配信予定動画です。")
-        st.markdown(build_additional_calendar_html(videos), unsafe_allow_html=True)
+    if st.button(
+        "2週間表示に戻す" if show_thirty_days else "さらに16日分を表示（合計30日分）",
+        key="toggle_calendar_range",
+    ):
+        st.session_state[state_key] = not show_thirty_days
+        st.rerun()
+
+    day_count = 30 if show_thirty_days else 14
+    st.subheader(f"予約投稿カレンダー（{'30日分' if show_thirty_days else '2週間'}）")
+    if show_thirty_days:
+        st.caption("今週月曜日から30日分の予約投稿／配信予定動画です。タイトルをクリックすると再生できます。")
+    else:
+        st.caption("今週月曜日から翌週日曜日までの予約投稿／配信予定動画です。タイトルをクリックすると再生できます。")
+    st.markdown(
+        build_calendar_html(videos, day_count=day_count),
+        unsafe_allow_html=True,
+    )
 
 
 def fetch_japanese_holidays() -> dict[str, str]:
