@@ -13,6 +13,8 @@ import json
 from urllib.request import urlopen
 import streamlit as st
 from streamlit.components.v1 import html as st_html
+from streamlit.proto.ForwardMsg_pb2 import ForwardMsg
+from streamlit.runtime.scriptrunner import get_script_run_ctx
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
@@ -762,11 +764,14 @@ def handle_oauth_callback():
 
 
 def start_google_oauth():
+    if not st.button("Googleアカウントで連携する", type="primary"):
+        return
+
     code_verifier = secrets.token_urlsafe(64)
     csrf_token = uuid.uuid4().hex
     state = build_oauth_state(csrf_token, code_verifier)
     flow = create_flow_with_code_verifier(code_verifier)
-    auth_url, state = flow.authorization_url(
+    auth_url, _ = flow.authorization_url(
         access_type="offline",
         include_granted_scopes="true",
         prompt="consent",
@@ -774,7 +779,13 @@ def start_google_oauth():
     )
     st.session_state["oauth_state"] = csrf_token
     st.session_state["oauth_code_verifier"] = code_verifier
-    st.markdown(f"[Googleアカウントで連携する]({auth_url})")
+
+    # st.login と同じ通知で、Cloud の埋め込み先にも同じタブでの遷移を依頼する。
+    context = get_script_run_ctx()
+    if context is not None:
+        message = ForwardMsg()
+        message.auth_redirect.url = auth_url
+        context.enqueue(message)
 
 
 def ensure_valid_creds(creds: Optional[Credentials]) -> Optional[Credentials]:
@@ -1088,7 +1099,7 @@ def render_reservation_form():
 
     if creds is None:
         st.write("まずは Google アカウントとの連携を行ってください。")
-        st.caption("※Googleの認証画面が別タブで開きます。認証後、この画面に戻ってきてください。")
+        st.caption("このタブでGoogleの認証画面が開き、認証後に予約フォームへ戻ります。")
         start_google_oauth()
         st.stop()
     else:
