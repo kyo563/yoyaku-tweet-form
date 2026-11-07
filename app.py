@@ -299,26 +299,31 @@ def build_two_week_calendar_html(
     )
 
 
-def render_two_week_calendar(videos: List[Video]) -> None:
-    state_key = "show_thirty_day_calendar"
-    st.session_state.setdefault(state_key, False)
-    show_thirty_days = bool(st.session_state[state_key])
+def render_reservation_calendar(videos: List[Video]) -> None:
+    st.subheader("予約投稿カレンダー")
+    selected_range = st.radio(
+        "表示期間",
+        ["30日間", "2週間", "全期間"],
+        horizontal=True,
+        key="reservation_calendar_range",
+    )
 
-    if st.button(
-        "2週間表示に戻す" if show_thirty_days else "さらに16日分を表示（合計30日分）",
-        key="toggle_calendar_range",
-    ):
-        st.session_state[state_key] = not show_thirty_days
-        st.rerun()
-
-    day_count = 30 if show_thirty_days else 14
-    st.subheader(f"予約投稿カレンダー（{'30日分' if show_thirty_days else '2週間'}）")
-    if show_thirty_days:
-        st.caption("今週月曜日から30日分の予約投稿／配信予定動画です。タイトルをクリックすると再生できます。")
+    jst = timezone(timedelta(hours=9))
+    today = datetime.now(jst).date()
+    first_day = today - timedelta(days=today.weekday())
+    if selected_range == "全期間":
+        latest_date = max(
+            (video.publish_at_utc.astimezone(jst).date() for video in videos),
+            default=today,
+        )
+        day_count = max(14, (latest_date - first_day).days + 1)
     else:
-        st.caption("今週月曜日から翌週日曜日までの予約投稿／配信予定動画です。タイトルをクリックすると再生できます。")
+        day_count = 14 if selected_range == "2週間" else 30
+
+    last_day = first_day + timedelta(days=day_count - 1)
+    st.caption(f"{first_day:%Y/%m/%d}〜{last_day:%Y/%m/%d}（日本時間）。タイトルをクリックすると再生できます。")
     st.markdown(
-        build_calendar_html(videos, day_count=day_count),
+        build_calendar_html(videos, base_date=today, day_count=day_count),
         unsafe_allow_html=True,
     )
 
@@ -1137,7 +1142,7 @@ def render_reservation_form():
 
     if videos:
         with calendar_placeholder.container():
-            render_two_week_calendar(videos)
+            render_reservation_calendar(videos)
 
     if not videos:
         st.info("「自分のチャンネルの予約動画リストを取得／更新」ボタンで予約動画リストを取得してください。")
