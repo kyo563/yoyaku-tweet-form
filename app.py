@@ -33,6 +33,9 @@ VIDEO_STATUS_GID = "0"
 # X(Twitter) のURL換算は https の場合 23 文字（公式仕様）
 URL_UNITS = 23
 
+CALENDAR_DEFAULT_DAYS = 14
+CALENDAR_LOOKAHEAD_DAYS = 31
+
 # ==============================
 # データ構造
 # ==============================
@@ -198,7 +201,7 @@ def build_calendar_html(
     base_date: Optional[date] = None,
     tz_name: str = "Asia/Tokyo",
     start_offset_days: int = 0,
-    day_count: int = 14,
+    day_count: int = CALENDAR_DEFAULT_DAYS,
 ) -> str:
     """今週月曜を基準に、指定範囲の予約動画カレンダーをHTMLで返す。"""
     try:
@@ -294,33 +297,33 @@ def build_two_week_calendar_html(
         videos,
         base_date=base_date,
         tz_name=tz_name,
-        start_offset_days=0,
-        day_count=14,
     )
 
 
 def render_two_week_calendar(videos: List[Video]) -> None:
-    state_key = "show_thirty_day_calendar"
-    st.session_state.setdefault(state_key, False)
-    show_thirty_days = bool(st.session_state[state_key])
+    today = datetime.now(timezone(timedelta(hours=9))).date()
+    first_day = today - timedelta(days=today.weekday())
+    additional_first_day = first_day + timedelta(days=CALENDAR_DEFAULT_DAYS)
+    last_day = today + timedelta(days=CALENDAR_LOOKAHEAD_DAYS)
 
-    if st.button(
-        "2週間表示に戻す" if show_thirty_days else "さらに16日分を表示（合計30日分）",
-        key="toggle_calendar_range",
-    ):
-        st.session_state[state_key] = not show_thirty_days
-        st.rerun()
-
-    day_count = 30 if show_thirty_days else 14
-    st.subheader(f"予約投稿カレンダー（{'30日分' if show_thirty_days else '2週間'}）")
-    if show_thirty_days:
-        st.caption("今週月曜日から30日分の予約投稿／配信予定動画です。タイトルをクリックすると再生できます。")
-    else:
-        st.caption("今週月曜日から翌週日曜日までの予約投稿／配信予定動画です。タイトルをクリックすると再生できます。")
+    st.subheader("予約投稿カレンダー（2週間）")
+    st.caption("今週月曜日から翌週日曜日までの予約投稿／配信予定動画です。タイトルをクリックすると再生できます。")
     st.markdown(
-        build_calendar_html(videos, day_count=day_count),
+        build_two_week_calendar_html(videos, base_date=today),
         unsafe_allow_html=True,
     )
+
+    with st.expander("さらに表示", expanded=False):
+        st.caption(f"{additional_first_day:%Y/%m/%d}〜{last_day:%Y/%m/%d}（日本時間）")
+        st.markdown(
+            build_calendar_html(
+                videos,
+                base_date=today,
+                start_offset_days=CALENDAR_DEFAULT_DAYS,
+                day_count=(last_day - additional_first_day).days + 1,
+            ),
+            unsafe_allow_html=True,
+        )
 
 
 def fetch_japanese_holidays() -> dict[str, str]:
