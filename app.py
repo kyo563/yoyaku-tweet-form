@@ -33,6 +33,9 @@ VIDEO_STATUS_GID = "0"
 # X(Twitter) のURL換算は https の場合 23 文字（公式仕様）
 URL_UNITS = 23
 
+CALENDAR_DEFAULT_DAYS = 14
+CALENDAR_LOOKAHEAD_DAYS = 31
+
 # ==============================
 # データ構造
 # ==============================
@@ -198,7 +201,7 @@ def build_calendar_html(
     base_date: Optional[date] = None,
     tz_name: str = "Asia/Tokyo",
     start_offset_days: int = 0,
-    day_count: int = 14,
+    day_count: int = CALENDAR_DEFAULT_DAYS,
 ) -> str:
     """今週月曜を基準に、指定範囲の予約動画カレンダーをHTMLで返す。"""
     try:
@@ -294,38 +297,33 @@ def build_two_week_calendar_html(
         videos,
         base_date=base_date,
         tz_name=tz_name,
-        start_offset_days=0,
-        day_count=14,
     )
 
 
-def render_reservation_calendar(videos: List[Video]) -> None:
-    st.subheader("予約投稿カレンダー")
-    selected_range = st.radio(
-        "表示期間",
-        ["30日間", "2週間", "全期間"],
-        horizontal=True,
-        key="reservation_calendar_range",
-    )
-
-    jst = timezone(timedelta(hours=9))
-    today = datetime.now(jst).date()
+def render_two_week_calendar(videos: List[Video]) -> None:
+    today = datetime.now(timezone(timedelta(hours=9))).date()
     first_day = today - timedelta(days=today.weekday())
-    if selected_range == "全期間":
-        latest_date = max(
-            (video.publish_at_utc.astimezone(jst).date() for video in videos),
-            default=today,
-        )
-        day_count = max(14, (latest_date - first_day).days + 1)
-    else:
-        day_count = 14 if selected_range == "2週間" else 30
+    additional_first_day = first_day + timedelta(days=CALENDAR_DEFAULT_DAYS)
+    last_day = today + timedelta(days=CALENDAR_LOOKAHEAD_DAYS)
 
-    last_day = first_day + timedelta(days=day_count - 1)
-    st.caption(f"{first_day:%Y/%m/%d}〜{last_day:%Y/%m/%d}（日本時間）。タイトルをクリックすると再生できます。")
+    st.subheader("予約投稿カレンダー（2週間）")
+    st.caption("今週月曜日から翌週日曜日までの予約投稿／配信予定動画です。タイトルをクリックすると再生できます。")
     st.markdown(
-        build_calendar_html(videos, base_date=today, day_count=day_count),
+        build_two_week_calendar_html(videos, base_date=today),
         unsafe_allow_html=True,
     )
+
+    with st.expander("さらに表示", expanded=False):
+        st.caption(f"{additional_first_day:%Y/%m/%d}〜{last_day:%Y/%m/%d}（日本時間）")
+        st.markdown(
+            build_calendar_html(
+                videos,
+                base_date=today,
+                start_offset_days=CALENDAR_DEFAULT_DAYS,
+                day_count=(last_day - additional_first_day).days + 1,
+            ),
+            unsafe_allow_html=True,
+        )
 
 
 def fetch_japanese_holidays() -> dict[str, str]:
@@ -1142,7 +1140,7 @@ def render_reservation_form():
 
     if videos:
         with calendar_placeholder.container():
-            render_reservation_calendar(videos)
+            render_two_week_calendar(videos)
 
     if not videos:
         st.info("「自分のチャンネルの予約動画リストを取得／更新」ボタンで予約動画リストを取得してください。")
